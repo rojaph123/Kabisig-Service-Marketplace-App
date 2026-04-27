@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --kabisig-blue: 59 130 246;
+  --kabisig-blue-dark: 30 64 175;
+  --kabisig-orange: 56 189 248;
+  --kabisig-bg: 234 242 255;
+  --kabisig-surface: 255 255 255;
+  --kabisig-border: 201 213 225;
+  --kabisig-text: 15 23 42;
+  --kabisig-muted: 71 85 105;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --kabisig-blue: 59 130 246;
+    --kabisig-blue-dark: 29 78 216;
+    --kabisig-orange: 56 189 248;
+    --kabisig-bg: 9 19 36;
+    --kabisig-surface: 17 31 56;
+    --kabisig-border: 42 62 94;
+    --kabisig-text: 243 246 251;
+    --kabisig-muted: 166 179 196;
+  }
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at top left, rgba(var(--kabisig-blue), 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(var(--kabisig-orange), 0.10), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(var(--kabisig-blue-dark), 0.08), transparent 20%),
+    rgb(var(--kabisig-bg));
+  color: rgb(var(--kabisig-text));
+}
+
+body {
+  min-height: 100vh;
+  background-attachment: fixed;
+  font-feature-settings: "ss01" on, "cv01" on;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+input,
+select,
+button {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(var(--kabisig-blue), 0.24);
+}

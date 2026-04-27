@@ -1,0 +1,38 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && userDoc().data.role == role;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /providerDocuments/{userId}/{allPaths=**} {
+      allow read: if hasRole("admin") || isOwner(userId);
+      allow write: if hasRole("admin") || isOwner(userId);
+    }
+
+    match /bookings/{bookingId}/{allPaths=**} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /messages/{threadId}/{allPaths=**} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /reviews/{providerId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}

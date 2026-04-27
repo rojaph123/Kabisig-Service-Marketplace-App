@@ -1,0 +1,16 @@
+{
+  "name": "kabisig-mvp",
+  "private": true,
+  "workspaces": [
+    "mobile-app",
+    "admin-web",
+    "shared",
+    "functions"
+  ],
+  "scripts": {
+    "mobile": "npm run dev --workspace mobile-app",
+    "admin": "npm run dev --workspace admin-web",
+    "functions": "npm run serve --workspace functions",
+    "lint": "npm run lint --workspace mobile-app && npm run lint --workspace admin-web"
+  }
+}

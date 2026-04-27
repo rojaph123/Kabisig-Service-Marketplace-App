@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Kabisig",
+    "slug": "kabisig-mobile",
+    "scheme": "kabisig",
+    "orientation": "portrait",
+    "icon": "./assets/branding/icon.jpg",
+    "splash": {
+      "image": "./assets/branding/logo-with-tagline.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#1C93E3"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "kabisig-expo-project"
+      }
+    }
+  }
+}

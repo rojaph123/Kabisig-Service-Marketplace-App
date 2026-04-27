@@ -1,0 +1,1156 @@
+You are a senior full-stack software architect, product designer, mobile engineer, web engineer, Firebase engineer, and UIUX specialist.
+
+Your task is to design and implement a complete MVP system for my project called
+
+KABISIG
+
+Kabisig is a service marketplace platform where customers can book local service providers such as
+- Electrician
+- Plumber
+- Welder
+- Construction Worker
+- Roofer
+
+The system has 3 user roles
+1. Customer
+2. Service Provider
+3. Admin
+
+IMPORTANT PRODUCT DIRECTION
+- The Customer uses a MOBILE APP.
+- The Service Provider uses a MOBILE APP.
+- The Admin uses a WEB-BASED ADMIN PANEL.
+- The Admin must NOT be built as a mobile-only interface.
+- The whole system must follow one unified Kabisig brand identity.
+
+==================================================
+1. PRIMARY OBJECTIVE
+==================================================
+
+Build a complete MVP front end and app structure with role-based authentication, onboarding, dashboard UI, mock data, Firebase-ready backend integration points, and clean reusable architecture.
+
+The system must include
+- Customer mobile app
+- Service Provider mobile app
+- Admin web panel
+- Role-based authentication
+- Google Sign-In for Customer and Service Provider
+- Provider registration workflow
+- Admin provider approval workflow
+- Notifications-ready structure
+- Analytics-ready structure
+- Reusable theme and components
+- Clean code and scalable architecture
+
+Do not give only code snippets.
+Create or update the actual files.
+Build a runnable project.
+If something is missing, make grounded assumptions and continue.
+At the end, provide
+- implementation summary
+- files created
+- files updated
+- file tree
+- environment variables needed
+- how to run the mobile app
+- how to run the admin web panel
+- main routesscreens for each role
+
+==================================================
+2. STACK TO USE
+==================================================
+
+Use this stack unless the current workspace already has an existing stack that should be continued carefully
+
+MOBILE APP
+- React Native with Expo
+- TypeScript
+- Expo Router or React Navigation
+- React Native Paper or custom lightweight UI only if needed
+- Firebase SDK
+
+ADMIN WEB PANEL
+- Next.js
+- TypeScript
+- Tailwind CSS
+- Recharts for analytics charts
+- Firebase SDK
+
+BACKEND  PLATFORM SERVICES
+- Firebase Authentication
+- Cloud Firestore
+- Firebase Storage
+- Firebase Cloud Messaging
+- Firebase Analytics
+- Optional Cloud Functions structure placeholders if needed
+
+FREE  LOW-COST MVP API DIRECTION
+- Use Firebase for auth, data, storage, notifications, and analytics-ready events
+- Use Google Sign-In for authentication
+- Do NOT use Gmail API as the main notification system
+- For notifications, prepare Firebase Cloud Messaging
+- For location, use device geolocation and simple maplocation placeholders for MVP
+- If map support is needed without adding complex paid setup, prepare location sections with mock or placeholder support first
+
+==================================================
+3. PROJECT STRUCTURE RULES
+==================================================
+
+First inspect the workspace.
+
+IF THE WORKSPACE ALREADY EXISTS
+- Audit the existing codebase
+- Reuse what is valid
+- Improve structure without breaking working code
+- Continue with current stack if it already matches React Native  Expo or Next.js
+- Do not delete important files without reason
+
+IF THE WORKSPACE IS EMPTY
+Create a clean monorepo-style or clearly separated project structure like
+
+mobile-app
+admin-web
+shared (optional shared constants, types, or brand files if practical)
+
+Inside the codebase, organize clearly using folders like
+- assets
+- components
+- screens
+- navigation
+- app
+- services
+- firebase
+- hooks
+- constants
+- theme
+- types
+- data
+- utils
+
+Keep components small and reusable.
+Use strong typing.
+Avoid giant files.
+
+==================================================
+4. BRANDING AND ASSETS
+==================================================
+
+Use the brand name
+Kabisig
+
+Use these attached image assets from the workspace if available
+- logo.jfif
+- logo with tagline.jfif
+- Customer Dashboard.jpg
+- logic.jfif
+
+ASSET RULES
+- Use the logo with tagline prominently on splash, login, registration, and welcome screens
+- Use the compact logo mark on headers, top bars, profile sections, sidebars, and small brand areas
+- Do not redesign the logo
+- Keep logo colors intact
+- If any asset is missing, continue with a temporary placeholder and clearly report which asset was not found
+
+==================================================
+5. UI  UX DESIGN SYSTEM
+==================================================
+
+The CUSTOMER dashboard screenshot is the main visual style anchor.
+
+Match the same look and feel
+- bright blue heroheader area
+- white cards
+- light gray page background
+- rounded corners
+- clean spacing
+- modern minimal icon style
+- orange accent for highlights and active states
+- soft borders or subtle shadows
+- mobile-first clean layout
+
+Use one shared design language across
+- Customer mobile app
+- Service Provider mobile app
+- Admin web panel
+
+The Admin web panel must still feel like Kabisig, not like a different product.
+
+SUGGESTED COLOR DIRECTION
+Choose colors close to the reference
+- Primary Blue similar to the dashboard blue in the sample
+- Accent Orange similar to active tabhighlight color in the sample
+- Background very light gray
+- Card white
+- Text Primary dark gray
+- Text Secondary medium gray
+- Border soft gray
+- Status colors for success, warning, pending, rejected, completed
+
+STYLE RULES
+- rounded hero cards and panels
+- rounded search fields
+- rounded action cards
+- clear section headers
+- strong visual hierarchy
+- readable typography
+- compact but clean information cards
+- safe area handling for mobile
+- responsive layout for web admin
+
+==================================================
+6. USER ROLES AND ACCESS RULES
+==================================================
+
+There are 3 roles
+
+1. Customer
+- books services
+- searches providers
+- views bookings
+- sends messages
+- views payments
+- manages profile
+
+2. Service Provider
+- registers as provider
+- completes provider onboarding form
+- waits for admin approval
+- accepts or rejects jobs
+- updates job status
+- communicates with customers
+- views earnings
+- manages profile and availability
+
+3. Admin
+- web-only dashboard
+- approves or rejects provider registrations
+- manages users and providers
+- monitors bookings
+- monitors payments
+- monitors reports and complaints
+- views analytics
+- manages service categories
+
+ROLE ACCESS RULES
+- Customer logs in to mobile app only
+- Service Provider logs in to mobile app only
+- Admin logs in to web panel only
+- Protect routes by role
+- Redirect users to the correct dashboard after login
+- Service providers with Pending Approval must not access full provider job features
+- Pending providers may log in, but they should only see
+  - application status
+  - profile completion
+  - submitted documents
+  - pending approval notice
+
+==================================================
+7. AUTHENTICATION REQUIREMENTS
+==================================================
+
+Implement a complete authentication flow.
+
+CUSTOMER AUTH
+- Sign up with email and password
+- Sign in with email and password
+- Continue with Google
+- Forgot password
+- Session persistence
+- Logout
+- Redirect to Customer mobile dashboard after login
+
+SERVICE PROVIDER AUTH
+- Register as Service Provider with email and password
+- Or continue with Google
+- After account creation, force provider onboarding form completion
+- Save provider role and onboarding status
+- Provider remains Pending Approval until approved by Admin
+- Pending provider can log in but cannot accept jobs yet
+- After Admin approval, redirect to full Service Provider dashboard
+
+ADMIN AUTH
+- Separate admin login for web dashboard
+- Use secure emailpassword admin login
+- Protect admin routes
+- Only admin role can access admin web panel
+
+SOCIAL LOGIN
+- Integrate Google Sign-In for Customer and Service Provider
+- Store user role, account type, onboarding status, and approval status in database
+- Structure auth cleanly so it can be configured with Firebase credentials later
+
+AUTH SCREENS TO CREATE
+- Splash Screen
+- Welcome Screen
+- Role Selection Screen
+- Login Screen
+- Register Screen
+- Forgot Password Screen
+- Service Provider Onboarding Screen
+- Pending Approval Screen
+
+==================================================
+8. SERVICE PROVIDER REGISTRATION FLOW
+==================================================
+
+This is important.
+
+SERVICE PROVIDER FLOW
+1. User chooses “Register as Service Provider”
+2. User signs up by
+   - emailpassword
+   - or Google Sign-In
+3. User completes provider onboarding form
+4. Application is saved to database
+5. Provider status becomes Pending Approval
+6. Admin reviews provider application in admin web panel
+7. Admin can
+   - Approve
+   - Reject
+   - Request Revision
+8. Only approved providers can
+   - appear in marketplace
+   - receive bookings
+   - accept jobs
+   - update job progress
+
+PROVIDER ONBOARDING FORM FIELDS
+Include fields like
+- Full Name
+- Business Name or Display Name
+- Email
+- Mobile Number
+- Address
+- City  Coverage Area
+- Service Categories Offered
+- Years of Experience
+- Short Bio  Description
+- Profile Photo
+- Valid ID Upload
+- Optional Permit  Certificate Upload
+- Availability Schedule
+- Emergency Contact if appropriate
+- Agreement  Terms checkbox
+
+Create upload-ready UI and Firebase Storage-ready service structure.
+If file upload is not fully wired due missing credentials, still build the upload UI and service abstraction cleanly.
+
+==================================================
+9. CUSTOMER MOBILE APP REQUIREMENTS
+==================================================
+
+The customer app UI must closely follow the attached customer dashboard screenshot.
+
+CUSTOMER MOBILE NAVIGATION
+Use bottom tabs
+- Home
+- Bookings
+- Messages
+- Payments
+- Profile
+
+CUSTOMER SCREENS
+
+A. Splash Screen
+- Use logo with tagline
+- Centered branding
+- Blue background or gradient based on brand
+- Smooth first-load experience
+
+B. Welcome  Role Selection
+- Show Kabisig branding
+- Buttonscards for
+  - Continue as Customer
+  - Continue as Service Provider
+  - Admin Login
+
+C. Login
+- Email
+- Password
+- Google Sign-In
+- Forgot password
+- Link to register
+
+D. Customer Registration
+- Emailpassword fields
+- Google Sign-In option
+- role set to Customer
+
+E. Customer Home Dashboard
+Build this closely to the reference
+- top blue hero cardheader
+- small logoicon top area
+- location label like “Your Location”
+- sample location display like “Malaybalay City, Bukidnon”
+- greeting line
+- search bar with placeholder “Search service or provider...”
+- Services section with service cards
+  - Electrician
+  - Plumber
+  - Welder
+  - Construction Worker
+  - Roofer
+- Quick Actions section
+  - My Bookings
+  - Messages
+  - Payments
+- Suggested Providers section
+- Bottom tab bar with Home active
+- Use modern rounded cards and clean spacing
+
+F. Customer Service Category Screen
+- grid or list of service categories
+- search field
+- tap category to see providers
+
+G. Provider Listing Screen
+- provider cards with
+  - provider photo
+  - name
+  - category
+  - rating
+  - short bio
+  - service area
+  - starting price if needed
+  - availability badge
+
+H. Provider Detail Screen
+- provider profile header
+- services offered
+- experience
+- reviews
+- contact  message
+- book now button
+
+I. Booking Flow
+- choose service
+- enter addresslocation
+- preferred datetime
+- notes or issue description
+- price estimate placeholder or service fee display
+- submit booking request
+
+J. Bookings Screen
+Use segments or tabs
+- Upcoming
+- Ongoing
+- Completed
+- Cancelled
+
+Each booking card should show
+- booking ID
+- provider name
+- service type
+- schedule
+- location
+- status badge
+
+K. Booking Details Screen
+- full details
+- status history
+- provider info
+- contact button
+- cancel button if allowed
+- mark completed  leave review when applicable
+
+L. Messages Screen
+- list of chats
+- latest message preview
+- unread badge
+- chat thread UI
+
+M. Payments Screen
+- payment methods UI
+- transaction history
+- booking payments list
+- payment status badge
+- mock receipts
+
+N. Profile Screen
+- customer info
+- editable profile
+- saved addresses
+- notification settings
+- supporthelp
+- logout
+
+==================================================
+10. SERVICE PROVIDER MOBILE APP REQUIREMENTS
+==================================================
+
+The provider mobile app must use the same Kabisig visual identity as the customer app.
+It should feel like the same product but optimized for provider tasks.
+
+SERVICE PROVIDER MOBILE NAVIGATION
+Use bottom tabs
+- Home
+- Jobs
+- Messages
+- Earnings
+- Profile
+
+PROVIDER SCREENS
+
+A. Provider Onboarding Form
+- as described above
+
+B. Pending Approval Screen
+- status badge
+- submitted application summary
+- note saying waiting for admin review
+- allow edit profile or resubmit if needed
+
+C. Provider Home Dashboard
+Use the same blue heroheader style as customer dashboard.
+Include
+- provider greeting
+- availability toggle
+- profile completion badge if applicable
+- summary cards
+  - New Requests
+  - Accepted Jobs
+  - In Progress Jobs
+  - Completed Today
+  - Earnings Today
+- quick actions
+  - View Requests
+  - Active Jobs
+  - Earnings
+  - Messages
+- nearby or latest requests section
+- clean bottom tab bar
+
+D. Jobs Screen
+Use segments or tabs
+- New Requests
+- Accepted
+- On the Way
+- In Progress
+- Completed
+- Cancelled
+
+Each job card should show
+- customer name
+- requested service
+- schedule
+- location
+- fee
+- status
+- acceptreject buttons if new
+- open details button
+
+E. Job Details Screen
+- booking details
+- customer details
+- service description
+- addresslocation block
+- chat button
+- call placeholder if needed
+- status actions
+  - Accept
+  - Reject
+  - Mark On the Way
+  - Mark In Progress
+  - Mark Completed
+
+F. Messages Screen
+- customer chat list
+- individual chat screen
+
+G. Earnings Screen
+- total earnings summary
+- daily earnings
+- weekly earnings
+- monthly earnings
+- transaction list
+- payout or cashout placeholder cards
+
+H. Profile Screen
+- provider info
+- profile photo
+- businessdisplay name
+- services offered
+- areas covered
+- years of experience
+- documents status
+- approval status
+- rating summary
+- availability schedule
+- logout
+
+==================================================
+11. ADMIN WEB PANEL REQUIREMENTS
+==================================================
+
+The Admin must be a full responsive WEB dashboard for desktop and tablet.
+Do NOT build admin as a mobile-only set of screens.
+
+ADMIN WEB MUST INCLUDE
+- secure admin login
+- role-protected admin routes
+- responsive sidebar layout
+- top navigation bar
+- dashboard overview
+- provider approval management
+- user management
+- booking management
+- payment monitoring
+- reportscomplaints management
+- service category management
+- analytics dashboard
+- basic settingsprofile page
+
+ADMIN WEB NAVIGATION
+Use a web sidebar or dashboard layout with sections such as
+- Dashboard
+- Provider Approvals
+- Bookings
+- Users
+- Payments
+- Reports
+- Categories
+- Analytics
+- Profile  Settings
+
+ADMIN WEB SCREENS
+
+A. Admin Login
+- secure emailpassword
+- branded login screen
+- logo with tagline
+- role protection
+
+B. Dashboard Overview
+Include
+- greeting  summary header
+- total customers
+- total service providers
+- pending provider approvals
+- active bookings
+- completed bookings
+- cancelled bookings
+- revenue or transaction summary
+- complaint counts
+- recent activity list
+
+C. Provider Approvals
+List pending provider applications with
+- provider photo
+- name
+- email
+- service categories
+- location
+- years of experience
+- uploaded documents preview placeholder
+- Approve button
+- Reject button
+- Request Revision button
+- view full application button
+
+D. Users Management
+- customers table
+- providers table
+- search
+- filters
+- sort
+- pagination
+- user details drawermodalpage
+- status controls
+
+E. Bookings Management
+- all bookings table
+- filters by status, category, date, provider, customer
+- booking detail view
+- status history view
+
+F. Payments Monitoring
+- payment summary cards
+- transaction table
+- status filters
+- method filters
+- mock settlementpayout view
+
+G. Reports  Complaints
+- list complaintsissues
+- booking-linked complaints
+- customerprovider details
+- status tracking
+- admin notes UI
+
+H. Service Category Management
+- categories table
+- addeditarchive category UI
+- category icons or labels
+
+I. Analytics Dashboard
+This must include charts, tables, filters, and KPI cards relevant to a service marketplace system.
+
+==================================================
+12. ADMIN ANALYTICS REQUIREMENTS
+==================================================
+
+Build admin analytics relevant to the system.
+
+Use Recharts or equivalent.
+
+ANALYTICS KPI CARDS
+- Total Customers
+- Total Service Providers
+- Pending Provider Approvals
+- Active Bookings
+- Completed Bookings
+- Cancelled Bookings
+- Total Transactions
+- Revenue Summary
+- Total Complaints
+
+ANALYTICS CHARTS  REPORTS
+Include
+- Daily booking counts
+- Weekly booking counts
+- Monthly booking counts
+- Booking trends over time
+- Customer growth over time
+- Provider growth over time
+- Revenue trends over time
+- Most requested services
+- Top performing providers
+- Average provider rating
+- Booking completion rate
+- Cancellation rate
+- Provider response time
+- Complaint counts by type
+- Location-based demand summary if location data is available
+- Approval status distribution for provider applications
+
+ANALYTICS UI FEATURES
+- date range filter
+- category filter
+- location filter if practical
+- export-ready structure
+- responsive chart cards
+- clean dashboard summaries
+
+You may use mock data initially, but structure the code so it can later use Firestore or Cloud Functions aggregates.
+
+==================================================
+13. DATA MODEL  DATABASE STRUCTURE
+==================================================
+
+Use Firebase Cloud Firestore with scalable collections and document structure.
+
+Create typed interfacesmodels for
+
+- User
+- CustomerProfile
+- ProviderProfile
+- ProviderApplication
+- ServiceCategory
+- Booking
+- BookingStatusHistory
+- Payment
+- MessageThread
+- Message
+- Review
+- Notification
+- ComplaintReport
+- AnalyticsSummary
+- AvailabilitySchedule
+- UploadedDocument
+
+SUGGESTED IMPORTANT FIELDS
+
+User
+- id
+- email
+- role
+- authProvider
+- fullName
+- profilePhoto
+- createdAt
+- updatedAt
+
+CustomerProfile
+- userId
+- phone
+- addresses
+- defaultLocation
+- notificationPreferences
+
+ProviderProfile
+- userId
+- displayName
+- businessName
+- phone
+- address
+- city
+- serviceAreas
+- serviceCategories
+- yearsExperience
+- bio
+- rating
+- isApproved
+- approvalStatus
+- availability
+- earningsSummary
+
+ProviderApplication
+- applicationId
+- userId
+- submittedAt
+- status
+- reviewedBy
+- reviewNotes
+- documentUrls
+
+Booking
+- bookingId
+- customerId
+- providerId
+- serviceCategoryId
+- serviceName
+- scheduledAt
+- address
+- location
+- notes
+- status
+- amount
+- createdAt
+- updatedAt
+
+BookingStatusHistory
+- bookingId
+- status
+- changedAt
+- changedBy
+
+Payment
+- paymentId
+- bookingId
+- customerId
+- providerId
+- amount
+- method
+- status
+- createdAt
+
+MessageThread
+- threadId
+- bookingId
+- participants
+- lastMessage
+- updatedAt
+
+Message
+- messageId
+- threadId
+- senderId
+- text
+- sentAt
+- readAt
+
+Review
+- reviewId
+- bookingId
+- customerId
+- providerId
+- rating
+- comment
+- createdAt
+
+Notification
+- notificationId
+- userId
+- type
+- title
+- body
+- isRead
+- createdAt
+
+ComplaintReport
+- reportId
+- bookingId
+- submittedBy
+- targetUserId
+- type
+- description
+- status
+- createdAt
+
+==================================================
+14. STATUS WORKFLOWS
+==================================================
+
+Use clear status handling.
+
+PROVIDER APPROVAL STATUS
+- Draft
+- Pending Approval
+- Approved
+- Rejected
+- Revision Requested
+
+BOOKING STATUS
+- Pending
+- Accepted
+- On the Way
+- In Progress
+- Completed
+- Cancelled
+
+PAYMENT STATUS
+- Pending
+- Paid
+- Failed
+- Refunded
+
+COMPLAINT STATUS
+- Open
+- Under Review
+- Resolved
+- Closed
+
+==================================================
+15. NOTIFICATIONS AND ALERT STRUCTURE
+==================================================
+
+Do NOT use Gmail API as the main notification system.
+
+Use a notification-ready structure for
+- Firebase Cloud Messaging push notifications
+- optional email notifications later
+- in-app notifications list
+
+PREPARE NOTIFICATION TRIGGERS FOR
+- new booking request
+- booking accepted
+- provider on the way
+- job in progress
+- job completed
+- payment update
+- new chat message
+- provider application submitted
+- provider approved
+- provider rejected
+- revision requested
+- complaint status updated
+
+Build servicesabstractions or placeholders for notification logic.
+
+==================================================
+16. FIREBASE INTEGRATION REQUIREMENTS
+==================================================
+
+Set up Firebase-ready architecture using
+- Firebase Auth
+- Firestore
+- Storage
+- Analytics
+- Messaging
+
+If real credentials are missing
+- create clean config files with environment variable placeholders
+- do not hardcode secrets
+- create .env.example or equivalent
+- create service wrappers
+- make the app compile as far as possible with mock data fallback
+
+NEEDED ENV PLACEHOLDERS MAY INCLUDE
+- Firebase API key
+- Auth domain
+- Project ID
+- Storage bucket
+- Messaging sender ID
+- App ID
+- Measurement ID if needed
+- Google Sign-In client IDs if needed
+
+==================================================
+17. LOCATION  MAP SUPPORT
+==================================================
+
+For MVP
+- add device location permission handling structure
+- display current or selected addresslocation in customer dashboard and booking flow
+- show provider coverage areas
+- show booking location blocks
+- use map placeholder or simple location card if full map config is not available yet
+
+Do not let map setup block the rest of the project.
+
+==================================================
+18. REUSABLE COMPONENTS TO CREATE
+==================================================
+
+Create reusable components such as
+
+MOBILE
+- HeroHeader
+- AppHeader
+- SearchBar
+- SectionHeader
+- ServiceCard
+- ActionCard
+- ProviderCard
+- BookingCard
+- JobCard
+- MessageListItem
+- TransactionItem
+- StatusBadge
+- EmptyState
+- PrimaryButton
+- SecondaryButton
+- FormInput
+- UploadField
+- ApprovalStatusCard
+
+WEB ADMIN
+- Sidebar
+- Topbar
+- DashboardStatCard
+- DataTable
+- FilterBar
+- SearchInput
+- ChartCard
+- ApprovalCard  ApprovalRow
+- BookingTable
+- UserTable
+- ComplaintTable
+- AnalyticsCard
+- SummaryPanel
+- StatusBadge
+- Modal  Drawer components if needed
+
+==================================================
+19. MOCK DATA REQUIREMENTS
+==================================================
+
+Create realistic mock data for
+- users
+- customers
+- providers
+- provider applications
+- service categories
+- suggested providers
+- bookings
+- booking history
+- messages
+- payments
+- reviews
+- notifications
+- complaints
+- analytics summaries
+
+Make the mock data useful for demonstrating
+- customer bookings
+- provider approval flow
+- provider job lifecycle
+- admin analytics dashboard
+
+==================================================
+20. DESIGN DETAILS PER ROLE
+==================================================
+
+CUSTOMER APP THEME
+- main reference is the attached dashboard screenshot
+- blue hero area
+- search bar
+- white service cards
+- quick actions
+- suggested providers
+- bottom tabs
+- simple and friendly marketplace feel
+
+SERVICE PROVIDER APP THEME
+- same brand and color system
+- same visual language
+- more status and action focused
+- summary cards for provider performance
+- job lifecycle UI
+
+ADMIN WEB THEME
+- same brand colors and logo
+- responsive dashboard layout
+- sidebar and topbar
+- charts and tables
+- professional operations dashboard
+- keep the same Kabisig identity
+
+==================================================
+21. CODE QUALITY RULES
+==================================================
+
+- Use TypeScript everywhere possible
+- Strong typing for all models
+- Clean reusable architecture
+- Separate UI from dataservices when practical
+- Keep components readable
+- Use good naming
+- Avoid hardcoded duplicated styles
+- Create shared theme constants
+- Create route guards or role checks
+- Use consistent status badge system
+- Handle loading, empty, and error states
+- Keep the app MVP-ready and scalable
+- Do not leave major screens as empty TODO placeholders
+
+==================================================
+22. WHAT TO BUILD FIRST
+==================================================
+
+Follow this order
+
+1. Audit workspace
+2. Decide whether to continue existing structure or create fresh structure
+3. Set up project folders
+4. Set up theme and brand assets
+5. Set up Firebase config placeholders
+6. Set up auth flow
+7. Build Customer mobile app screens
+8. Build Service Provider mobile app screens
+9. Build Admin web panel screens
+10. Add mock data
+11. Add role-based navigation and route protection
+12. Add analytics components and charts
+13. Connect the main flows
+14. Final cleanup and summary
+
+==================================================
+23. ACCEPTANCE CRITERIA
+==================================================
+
+The work is acceptable only if
+
+- Customer mobile app exists and matches the provided UI direction
+- Service Provider mobile app exists and shares the same brand style
+- Admin is a WEB dashboard, not a mobile-only admin
+- Google Sign-In is included for Customer and Service Provider
+- Service Provider registration flow exists
+- Provider approval flow exists
+- Pending provider state exists
+- Admin analytics relevant to the system exist
+- Reusable components and theme exist
+- Mock data exists
+- Project is organized cleanly
+- Run steps are provided
+- Firebase config placeholders are provided
+- Final summary is provided
+
+==================================================
+24. FINAL RESPONSE FORMAT AFTER IMPLEMENTATION
+==================================================
+
+After coding, provide
+
+1. Short implementation summary
+2. Main assumptions made
+3. Files created
+4. Files updated
+5. File tree
+6. Environment variables needed
+7. How to run mobile app
+8. How to run admin web panel
+9. Key routesscreens for each role
+10. Next recommended steps
+
+Start now by auditing the workspace, then build the complete Kabisig MVP based on these requirements.
