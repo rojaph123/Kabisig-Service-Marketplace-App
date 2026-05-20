@@ -33,6 +33,7 @@ import {
   DocumentData,
   QueryConstraint,
   deleteDoc,
+  deleteField,
   WriteBatch,
   writeBatch,
   runTransaction,
@@ -67,7 +68,8 @@ function createFirebaseAuth(app: any): Auth {
       initializeAuth: (app: any, deps?: { persistence?: unknown }) => Auth;
       getReactNativePersistence: (storage: unknown) => unknown;
     };
-    const ReactNativeAsyncStorage = require("@react-native-async-storage/async-storage").default;
+    const dynamicRequire = eval("require") as (moduleName: string) => any;
+    const ReactNativeAsyncStorage = dynamicRequire("@react-native-async-storage/async-storage").default;
 
     try {
       return authReactNative.initializeAuth(app, {
@@ -127,11 +129,16 @@ import {
   User,
   CustomerProfile,
   ProviderProfile,
+  ProviderPortfolioItem,
   ProviderApplication,
   UploadedDocument,
   MediaAttachment,
   ServiceCategory,
   Booking,
+  BookingChangeRequest,
+  CommunityPost,
+  CommunityPostComment,
+  CommunityPostPhotoEngagement,
   Payment,
   MessageThread,
   Message,
@@ -182,6 +189,27 @@ function toMediaAttachmentFromUrl(url: string, fallbackName: string, uploadedBy?
   };
 }
 
+const PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES = 20 * 1024 * 1024;
+
+function assertMediaSize(value: string | MediaAttachment, maxSizeBytes: number, label: string) {
+  const sizeBytes = typeof value === "string"
+    ? value.startsWith("data:")
+      ? estimateDataUrlSizeBytes(value)
+      : undefined
+    : value.sizeBytes;
+
+  if (sizeBytes && sizeBytes > maxSizeBytes) {
+    throw new Error(`${label} must be 20 MB or smaller.`);
+  }
+}
+
+function assertImageMedia(value: string | MediaAttachment, label: string) {
+  const mimeType = typeof value === "string" ? detectMimeTypeFromDataUrl(value) : value.mimeType || "";
+  if (mimeType && mimeType !== "application/octet-stream" && !mimeType.startsWith("image/")) {
+    throw new Error(`${label} must be an image file.`);
+  }
+}
+
 function normalizeMediaInput(value: string | MediaAttachment, fallbackName: string, uploadedBy?: string): MediaAttachment {
   if (typeof value === "string") {
     return toMediaAttachmentFromUrl(value, fallbackName, uploadedBy);
@@ -198,9 +226,13 @@ async function persistMediaAttachment(
   value: string | MediaAttachment,
   storagePath: string,
   fallbackName: string,
-  uploadedBy?: string
+  uploadedBy?: string,
+  maxSizeBytes?: number
 ): Promise<MediaAttachment> {
   const normalized = normalizeMediaInput(value, fallbackName, uploadedBy);
+  if (maxSizeBytes) {
+    assertMediaSize(normalized, maxSizeBytes, fallbackName);
+  }
   if (!normalized.url.startsWith("data:")) {
     return normalized;
   }
@@ -213,6 +245,7 @@ async function persistMediaAttachment(
       mimeType: string;
       fileName: string;
       uploadedBy?: string;
+      maxSizeBytes?: number;
     },
     {
       url: string;
@@ -226,6 +259,7 @@ async function persistMediaAttachment(
     mimeType,
     fileName: normalized.fileName || fallbackName,
     uploadedBy,
+    maxSizeBytes,
   });
 
   return {
@@ -244,6 +278,32 @@ async function callFunction<TInput extends Record<string, unknown>, TOutput = un
   const callable = httpsCallable<TInput, TOutput>(getFirebaseFunctions(), name);
   const response = await callable(payload);
   return response.data;
+}
+
+function isCallableUnavailableError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("functions/not-found") ||
+    message.includes("functions/unavailable") ||
+    message.includes("internal") ||
+    message.includes("not found") ||
+    message.includes("network request failed")
+  );
+}
+
+function isPermissionDeniedError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("permission-denied") || message.includes("missing or insufficient permissions");
+}
+
+function handleSnapshotError(label: string, error: unknown, fallback?: () => void) {
+  if (isPermissionDeniedError(error)) {
+    fallback?.();
+    return;
+  }
+
+  console.error(`${label} listener error:`, error);
+  fallback?.();
 }
 
 async function persistMediaAttachments(
@@ -290,6 +350,14 @@ function sanitizeForFirestore<T>(value: T): T {
   return value;
 }
 
+function sortBookingsNewestFirst(items: Booking[]) {
+  return [...items].sort((left, right) => {
+    const rightKey = right.updatedAt || right.createdAt || right.scheduledAt || "";
+    const leftKey = left.updatedAt || left.createdAt || left.scheduledAt || "";
+    return rightKey.localeCompare(leftKey);
+  });
+}
+
 const defaultServiceCategories: ServiceCategory[] = [
   {
     id: "electrician",
@@ -308,6 +376,15 @@ const defaultServiceCategories: ServiceCategory[] = [
     startingPrice: 450
   },
   {
+    id: "aircon-repair",
+    name: "Aircon Repair",
+    icon: "snow-outline",
+    iconColor: "#0284C7",
+    description: "Air conditioner cleaning, diagnostics, repair, freon checks, and cooling maintenance.",
+    startingPrice: 850,
+    active: false
+  },
+  {
     id: "welder",
     name: "Welder",
     icon: "flame-outline",
@@ -317,11 +394,21 @@ const defaultServiceCategories: ServiceCategory[] = [
   },
   {
     id: "construction-worker",
-    name: "Construction Worker",
+    name: "Carpenter",
     icon: "hammer-outline",
-    iconColor: "#CA8A04",
-    description: "General construction support, masonry help, and on-site labor services.",
-    startingPrice: 900
+    iconColor: "#B45309",
+    description: "Wood framing, cabinets, doors, fixtures, and general carpentry repair services.",
+    startingPrice: 900,
+    active: true
+  },
+  {
+    id: "tile-setter",
+    name: "Tile Setter",
+    icon: "grid-outline",
+    iconColor: "#64748B",
+    description: "Floor and wall tile layout, installation, grout repair, and finishing services.",
+    startingPrice: 850,
+    active: true
   },
   {
     id: "roofer",
@@ -345,7 +432,8 @@ const defaultServiceCategories: ServiceCategory[] = [
     icon: "car-sport-outline",
     iconColor: "#DC2626",
     description: "Car diagnostics, repair, tune-ups, and maintenance services.",
-    startingPrice: 900
+    startingPrice: 900,
+    active: false
   },
   {
     id: "motor-mechanic",
@@ -353,15 +441,18 @@ const defaultServiceCategories: ServiceCategory[] = [
     icon: "bicycle-outline",
     iconColor: "#0F766E",
     description: "Motorcycle repair, tune-ups, diagnostics, and maintenance services.",
-    startingPrice: 700
+    startingPrice: 700,
+    active: false
   }
 ];
 
 const defaultCoverageAreas: CoverageArea[] = [
   { id: "malaybalay-city", name: "Malaybalay City", active: true },
-  { id: "valencia-city", name: "Valencia City", active: true },
-  { id: "maramag", name: "Maramag", active: true }
+  { id: "valencia-city", name: "Valencia City", active: false },
+  { id: "maramag", name: "Maramag", active: false }
 ];
+
+const marketplaceVisibilityPreset = "2026-05-worker-categories";
 
 async function createRoleProfile(userId: string, fullName: string, role: "customer" | "provider") {
   if (role === "customer") {
@@ -372,7 +463,9 @@ async function createRoleProfile(userId: string, fullName: string, role: "custom
         phone: "",
         addresses: [],
         defaultLocation: "",
+        pinpointLocation: "",
         profilePhotoUrl: "",
+        savedProviderIds: [],
         notificationPreferences: { push: true, email: true, sms: false },
       } as CustomerProfile,
       { merge: true }
@@ -431,6 +524,7 @@ async function upsertUserDocument({
   fullName,
   role,
   authProvider,
+  phone,
   profilePhoto
 }: {
   uid: string;
@@ -438,6 +532,7 @@ async function upsertUserDocument({
   fullName: string;
   role: "customer" | "provider";
   authProvider: "email" | "google";
+  phone?: string;
   profilePhoto?: string;
 }) {
   const payload: User = {
@@ -446,13 +541,16 @@ async function upsertUserDocument({
     role,
     authProvider,
     fullName,
+    phone,
     profilePhoto: profilePhoto || "",
     appTheme: "system",
+    termsAcceptedAt: undefined,
+    termsVersion: undefined,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
-  await setDoc(doc(getFirestore_(), "users", uid), payload, { merge: true });
+  await setDoc(doc(getFirestore_(), "users", uid), sanitizeForFirestore(payload), { merge: true });
   await createRoleProfile(uid, fullName, role);
 }
 
@@ -466,7 +564,8 @@ export const authService = {
     email: string,
     password: string,
     fullName: string,
-    role: "customer" | "provider"
+    role: "customer" | "provider",
+    phone?: string
   ): Promise<{ user: FirebaseUser; uid: string }> {
     const credential = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
     const { user } = credential;
@@ -479,7 +578,8 @@ export const authService = {
       email: user.email || email,
       fullName,
       role,
-      authProvider: "email"
+      authProvider: "email",
+      phone: phone?.trim()
     });
 
     return { user, uid: user.uid };
@@ -511,6 +611,10 @@ export const authService = {
     accessToken?: string;
     usePopup?: boolean;
   }): Promise<{ user: FirebaseUser; appUser: User; isNewUser: boolean }> {
+    if (params.role !== "customer") {
+      throw new Error("Google sign-in is available for customer accounts only.");
+    }
+
     const authUser = params.usePopup
       ? await this.loginWithGooglePopup()
       : await this.loginWithGoogleCredential(params.idToken, params.accessToken);
@@ -519,17 +623,23 @@ export const authService = {
     const fullName = authUser.displayName || authUser.email?.split("@")[0] || "Kabisig User";
     const email = authUser.email || "";
     const photo = authUser.photoURL || "";
+    const isNewUser = !existingUser;
 
-    if (params.intent === "login") {
-      if (!existingUser) {
-        await firebaseSignOut(getFirebaseAuth());
-        throw new Error("No Google account record was found for this role yet. Use Create account first.");
-      }
-      if (existingUser.role !== params.role) {
-        await firebaseSignOut(getFirebaseAuth());
-        throw new Error(`This Google account is registered as ${existingUser.role}, not ${params.role}.`);
-      }
+    if (existingUser && existingUser.role !== params.role) {
+      await firebaseSignOut(getFirebaseAuth());
+      throw new Error(`This Google account is already registered as ${existingUser.role}.`);
+    }
 
+    if (isNewUser) {
+      await upsertUserDocument({
+        uid: authUser.uid,
+        email,
+        fullName,
+        role: params.role,
+        authProvider: "google",
+        profilePhoto: photo
+      });
+    } else {
       await setDoc(
         doc(getFirestore_(), "users", authUser.uid),
         {
@@ -541,25 +651,7 @@ export const authService = {
         },
         { merge: true }
       );
-
-      const nextUser = (await this.getUserDocument(authUser.uid)) as User;
-      return { user: authUser, appUser: nextUser, isNewUser: false };
     }
-
-    if (existingUser && existingUser.role !== params.role) {
-      await firebaseSignOut(getFirebaseAuth());
-      throw new Error(`This Google account is already registered as ${existingUser.role}.`);
-    }
-
-    const isNewUser = !existingUser;
-    await upsertUserDocument({
-      uid: authUser.uid,
-      email,
-      fullName,
-      role: params.role,
-      authProvider: "google",
-      profilePhoto: photo
-    });
 
     const nextUser = (await this.getUserDocument(authUser.uid)) as User;
     return { user: authUser, appUser: nextUser, isNewUser };
@@ -640,12 +732,45 @@ export const userService = {
         phone: "",
         addresses: [],
         defaultLocation: "",
+        pinpointLocation: "",
         profilePhotoUrl: "",
+        savedProviderIds: [],
         notificationPreferences: { push: true, email: true, sms: false },
         ...sanitizedData,
       } as CustomerProfile),
       { merge: true }
     );
+  },
+
+  async getSavedProviderIds(userId: string): Promise<string[]> {
+    const profile = await this.getCustomerProfile(userId);
+    return profile?.savedProviderIds ?? [];
+  },
+
+  async saveProvider(userId: string, providerId: string): Promise<void> {
+    const savedProviderIds = await this.getSavedProviderIds(userId);
+    if (savedProviderIds.includes(providerId)) return;
+
+    await this.updateCustomerProfile(userId, {
+      savedProviderIds: [...savedProviderIds, providerId],
+    });
+  },
+
+  async unsaveProvider(userId: string, providerId: string): Promise<void> {
+    const savedProviderIds = await this.getSavedProviderIds(userId);
+    await this.updateCustomerProfile(userId, {
+      savedProviderIds: savedProviderIds.filter((item) => item !== providerId),
+    });
+  },
+
+  async getSavedProviders(userId: string): Promise<(ProviderProfile & { userId: string })[]> {
+    const savedProviderIds = await this.getSavedProviderIds(userId);
+    if (!savedProviderIds.length) return [];
+
+    const providers = await providerService.getAllProviderProfiles();
+    return savedProviderIds
+      .map((providerId) => providers.find((provider) => provider.userId === providerId))
+      .filter((provider): provider is ProviderProfile & { userId: string } => Boolean(provider));
   },
 
   // Get provider profile
@@ -675,6 +800,7 @@ export const userService = {
         permitCertificateUrl: "",
         sampleWorkUrls: [],
         sampleWorks: [],
+        portfolio: [],
         birthday: "",
         age: 0,
         phone: "",
@@ -730,6 +856,7 @@ export const userService = {
         role: "customer",
         authProvider: "email",
         fullName: "",
+        phone: "",
         appTheme: "system",
         createdAt: new Date().toISOString(),
         ...payload,
@@ -791,22 +918,40 @@ export const mediaService = {
     value: string | MediaAttachment,
     pathPrefix: string,
     fileName: string,
-    uploadedBy?: string
+    uploadedBy?: string,
+    maxSizeBytes?: number
   ): Promise<MediaAttachment> {
     return persistMediaAttachment(
       value,
       `${pathPrefix}/${Date.now()}-${toStorageSafeSegment(fileName)}`,
       fileName,
-      uploadedBy
+      uploadedBy,
+      maxSizeBytes
     );
   },
 
   async uploadMany(
     values: Array<string | MediaAttachment>,
     pathPrefix: string,
-    uploadedBy?: string
+    uploadedBy?: string,
+    maxSizeBytes?: number
   ): Promise<MediaAttachment[]> {
-    return persistMediaAttachments(values, pathPrefix, uploadedBy);
+    if (!maxSizeBytes) {
+      return persistMediaAttachments(values, pathPrefix, uploadedBy);
+    }
+    return Promise.all(
+      values.map((value, index) =>
+        persistMediaAttachment(
+          value,
+          `${pathPrefix}/${Date.now()}-${index}-${toStorageSafeSegment(
+            typeof value === "string" ? "attachment" : value.fileName || value.id || "attachment"
+          )}`,
+          typeof value === "string" ? `attachment-${index + 1}` : value.fileName || `attachment-${index + 1}`,
+          uploadedBy,
+          maxSizeBytes
+        )
+      )
+    );
   },
 
   async deleteStoredMedia(items: Array<string | MediaAttachment>): Promise<void> {
@@ -962,22 +1107,44 @@ export const providerService = {
       status: "Pending Approval",
       documentUrls,
     } as ProviderApplication);
-    const result = await callFunction<
-      {
-        applicationId: string;
-        userId: string;
-        application: ProviderApplication;
-        providerProfileUpdate: Partial<ProviderProfile> & { termsAcceptedAt?: string };
-      },
-      { applicationId: string }
-    >("submitProviderApplication", {
-      applicationId,
-      userId,
-      application,
-      providerProfileUpdate,
-    });
+    try {
+      const result = await callFunction<
+        {
+          applicationId: string;
+          userId: string;
+          application: ProviderApplication;
+          providerProfileUpdate: Partial<ProviderProfile> & { termsAcceptedAt?: string };
+        },
+        { applicationId: string }
+      >("submitProviderApplication", {
+        applicationId,
+        userId,
+        application,
+        providerProfileUpdate,
+      });
 
-    return result.applicationId;
+      return result.applicationId;
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+
+      const batch = writeBatch(getFirestore_());
+      batch.set(doc(getFirestore_(), "providerApplications", applicationId), application, { merge: true });
+      batch.set(
+        doc(getFirestore_(), "providerProfiles", userId),
+        sanitizeForFirestore({
+          ...providerProfileUpdate,
+          approvalStatus: "Pending Approval",
+          isApproved: false,
+          moderation: { status: "active" },
+          updatedAt: nowIso(),
+        }),
+        { merge: true }
+      );
+      await batch.commit();
+      return applicationId;
+    }
   },
 
   async getLatestApplicationByUser(userId: string): Promise<ProviderApplication | null> {
@@ -1091,22 +1258,7 @@ export const providerService = {
       .filter((provider) => this.isProviderVisible(provider))
       .slice(0, limit);
 
-    if (approvedProviders.length) {
-      return approvedProviders;
-    }
-
-    // Fallback for early MVP setup: if no approved providers exist yet,
-    // surface visible non-rejected providers so the marketplace remains testable.
-    const fallbackSnapshot = await getDocs(collection(getFirestore_(), "providerProfiles"));
-    return fallbackSnapshot.docs
-      .map((doc) => ({ ...(doc.data() as ProviderProfile), userId: doc.id }))
-      .filter(
-        (provider) =>
-          provider.approvalStatus !== "Rejected" &&
-          provider.approvalStatus !== "Draft" &&
-          this.isProviderVisible({ ...provider, isApproved: true })
-      )
-      .slice(0, limit);
+    return approvedProviders;
   },
 
   // Get providers by service category
@@ -1125,20 +1277,21 @@ export const providerService = {
       return matchingProviders;
     }
 
-    const categoryFallback = defaultServiceCategories.find((category) => category.id === categoryId)?.name;
-    const fallbackSnapshot = await getDocs(collection(getFirestore_(), "providerProfiles"));
-    return fallbackSnapshot.docs
+    const category = await categoryService.getCategoryById(categoryId);
+    if (!category?.name) {
+      return [];
+    }
+
+    const allApprovedProviders = await getDocs(
+      query(collection(getFirestore_(), "providerProfiles"), where("isApproved", "==", true))
+    );
+    return allApprovedProviders.docs
       .map((doc) => doc.data() as ProviderProfile)
       .filter((provider) => {
         const offersCategory =
           provider.serviceCategories.includes(categoryId) ||
-          (categoryFallback ? provider.serviceCategories.includes(categoryFallback) : false);
-        return (
-          offersCategory &&
-          provider.approvalStatus !== "Rejected" &&
-          provider.approvalStatus !== "Draft" &&
-          this.isProviderVisible({ ...provider, isApproved: true })
-        );
+          provider.serviceCategories.includes(category.name);
+        return offersCategory && this.isProviderVisible(provider);
       });
   },
 
@@ -1156,6 +1309,73 @@ export const providerService = {
   },
 };
 
+export const providerPortfolioService = {
+  async addPortfolioItem(
+    providerId: string,
+    data: {
+      title: string;
+      description?: string;
+      beforePhoto: string | MediaAttachment;
+      afterPhoto: string | MediaAttachment;
+    }
+  ): Promise<ProviderPortfolioItem> {
+    const title = data.title.trim();
+    if (!title) {
+      throw new Error("Please add a short portfolio title.");
+    }
+    assertImageMedia(data.beforePhoto, "Before photo");
+    assertImageMedia(data.afterPhoto, "After photo");
+    assertMediaSize(data.beforePhoto, PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES, "Before photo");
+    assertMediaSize(data.afterPhoto, PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES, "After photo");
+
+    const profile = await userService.getProviderProfile(providerId);
+    const portfolioItemId = `portfolio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const [beforePhoto, afterPhoto] = await Promise.all([
+      mediaService.uploadMedia(
+        data.beforePhoto,
+        `providerPortfolio/${providerId}/${portfolioItemId}`,
+        "before-photo",
+        providerId,
+        PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES
+      ),
+      mediaService.uploadMedia(
+        data.afterPhoto,
+        `providerPortfolio/${providerId}/${portfolioItemId}`,
+        "after-photo",
+        providerId,
+        PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES
+      ),
+    ]);
+
+    const now = nowIso();
+    const item: ProviderPortfolioItem = sanitizeForFirestore({
+      portfolioItemId,
+      providerId,
+      title,
+      description: data.description?.trim() || "",
+      beforePhoto,
+      afterPhoto,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const nextPortfolio = [item, ...(profile?.portfolio ?? [])];
+    await userService.updateProviderProfile(providerId, { portfolio: nextPortfolio });
+    return item;
+  },
+
+  async deletePortfolioItem(providerId: string, portfolioItemId: string): Promise<void> {
+    const profile = await userService.getProviderProfile(providerId);
+    const portfolio = profile?.portfolio ?? [];
+    const target = portfolio.find((item) => item.portfolioItemId === portfolioItemId);
+    if (!target) return;
+
+    await mediaService.deleteStoredMedia([target.beforePhoto, target.afterPhoto]);
+    await userService.updateProviderProfile(providerId, {
+      portfolio: portfolio.filter((item) => item.portfolioItemId !== portfolioItemId),
+    });
+  },
+};
+
 // ============================================================================
 // SERVICE CATEGORY SERVICES
 // ============================================================================
@@ -1163,25 +1383,10 @@ export const providerService = {
 export const categoryService = {
   // Get all categories
   async getAllCategories(): Promise<ServiceCategory[]> {
-    let categories: ServiceCategory[] = [];
-    try {
-      const snapshot = await getDocs(collection(getFirestore_(), "serviceCategories"));
-      categories = snapshot.docs.map((doc) => doc.data() as ServiceCategory);
-    } catch {
-      categories = [];
-    }
-    const merged = [...defaultServiceCategories];
-    categories.forEach((category) => {
-      const existingIndex = merged.findIndex(
-        (item) => item.id === category.id || item.name.toLowerCase() === category.name.toLowerCase()
-      );
-      if (existingIndex >= 0) {
-        merged[existingIndex] = { ...merged[existingIndex], ...category };
-      } else {
-        merged.push(category);
-      }
-    });
-    return merged;
+    const snapshot = await getDocs(collection(getFirestore_(), "serviceCategories"));
+    return snapshot.docs
+      .map((doc) => doc.data() as ServiceCategory)
+      .filter((category) => category.active !== false);
   },
 
   // Get category by ID
@@ -1189,14 +1394,50 @@ export const categoryService = {
     const docRef = doc(getFirestore_(), "serviceCategories", categoryId);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
-      return docSnap.data() as ServiceCategory;
+      const category = docSnap.data() as ServiceCategory;
+      return category.active === false ? null : category;
     }
-    return defaultServiceCategories.find((category) => category.id === categoryId) ?? null;
+    return null;
   },
 
   // Create category (admin)
   async createCategory(categoryData: ServiceCategory): Promise<void> {
-    await setDoc(doc(getFirestore_(), "serviceCategories", categoryData.id), categoryData);
+    await setDoc(doc(getFirestore_(), "serviceCategories", categoryData.id), { active: true, ...categoryData });
+  },
+
+  async ensureDefaultCategories(): Promise<void> {
+    await Promise.all(
+      defaultServiceCategories.map(async (category) => {
+        const ref = doc(getFirestore_(), "serviceCategories", category.id);
+        const existing = await getDoc(ref);
+        if (!existing.exists()) {
+          await setDoc(ref, {
+            ...category,
+            visibilityPresetVersion: marketplaceVisibilityPreset,
+          });
+          return;
+        }
+
+        const current = existing.data() as ServiceCategory & { visibilityPresetVersion?: string };
+        if (current.visibilityPresetVersion === marketplaceVisibilityPreset) {
+          return;
+        }
+
+        const migration: Partial<ServiceCategory> & { visibilityPresetVersion: string } = {
+          visibilityPresetVersion: marketplaceVisibilityPreset,
+        };
+        if (["aircon-repair", "car-mechanic", "motor-mechanic"].includes(category.id)) {
+          migration.active = false;
+        }
+        if (category.id === "construction-worker") {
+          Object.assign(migration, category);
+        }
+
+        if (Object.keys(migration).length > 1) {
+          await setDoc(ref, migration, { merge: true });
+        }
+      })
+    );
   },
 
   // Update category (admin)
@@ -1210,26 +1451,48 @@ export const categoryService = {
 };
 
 export const coverageAreaService = {
+  async ensureDefaultCoverageAreas(): Promise<void> {
+    await Promise.all(
+      defaultCoverageAreas.map(async (coverageArea) => {
+        const ref = doc(getFirestore_(), "coverageAreas", coverageArea.id);
+        const existing = await getDoc(ref);
+        if (!existing.exists()) {
+          await setDoc(ref, {
+            ...coverageArea,
+            visibilityPresetVersion: marketplaceVisibilityPreset,
+          });
+          return;
+        }
+
+        const current = existing.data() as CoverageArea & { visibilityPresetVersion?: string };
+        if (current.visibilityPresetVersion === marketplaceVisibilityPreset) {
+          return;
+        }
+
+        if (["valencia-city", "maramag"].includes(coverageArea.id)) {
+          await setDoc(
+            ref,
+            {
+              active: false,
+              visibilityPresetVersion: marketplaceVisibilityPreset,
+            },
+            { merge: true }
+          );
+        }
+      })
+    );
+  },
+
+  async getAllConfiguredCoverageAreas(): Promise<CoverageArea[]> {
+    const snapshot = await getDocs(collection(getFirestore_(), "coverageAreas"));
+    return snapshot.docs.map((entry) => entry.data() as CoverageArea);
+  },
+
   async getAllCoverageAreas(): Promise<CoverageArea[]> {
-    let coverageAreas: CoverageArea[] = [];
-    try {
-      const snapshot = await getDocs(collection(getFirestore_(), "coverageAreas"));
-      coverageAreas = snapshot.docs.map((entry) => entry.data() as CoverageArea);
-    } catch {
-      coverageAreas = [];
-    }
-    const merged = [...defaultCoverageAreas];
-    coverageAreas.forEach((coverageArea) => {
-      const existingIndex = merged.findIndex(
-        (item) => item.id === coverageArea.id || item.name.toLowerCase() === coverageArea.name.toLowerCase()
-      );
-      if (existingIndex >= 0) {
-        merged[existingIndex] = { ...merged[existingIndex], ...coverageArea };
-      } else {
-        merged.push(coverageArea);
-      }
-    });
-    return merged.filter((item) => item.active !== false);
+    const snapshot = await getDocs(collection(getFirestore_(), "coverageAreas"));
+    return snapshot.docs
+      .map((entry) => entry.data() as CoverageArea)
+      .filter((item) => item.active !== false);
   },
 
   async createCoverageArea(data: CoverageArea): Promise<void> {
@@ -1243,6 +1506,15 @@ export const coverageAreaService = {
   async deleteCoverageArea(coverageAreaId: string): Promise<void> {
     await deleteDoc(doc(getFirestore_(), "coverageAreas", coverageAreaId));
   }
+};
+
+export const marketplaceConfigService = {
+  async ensureDefaultMarketplaceData(): Promise<void> {
+    await Promise.all([
+      categoryService.ensureDefaultCategories(),
+      coverageAreaService.ensureDefaultCoverageAreas(),
+    ]);
+  },
 };
 
 export const bookingConflictService = {
@@ -1368,24 +1640,30 @@ export const bookingService = {
   async getCustomerBookings(customerId: string): Promise<Booking[]> {
     const q = query(collection(getFirestore_(), "bookings"), where("customerId", "==", customerId));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((doc) => doc.data() as Booking);
+    return sortBookingsNewestFirst(snapshot.docs.map((doc) => doc.data() as Booking));
   },
 
   // Get provider jobs/bookings
   async getProviderBookings(providerId: string): Promise<Booking[]> {
     const q = query(collection(getFirestore_(), "bookings"), where("providerId", "==", providerId));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map((doc) => doc.data() as Booking);
+    return sortBookingsNewestFirst(snapshot.docs.map((doc) => doc.data() as Booking));
   },
 
   // Update booking
   async updateBooking(bookingId: string, data: Partial<Booking>): Promise<void> {
     if (data.status && Object.keys(data).every((key) => key === "status")) {
-      await callFunction<{ bookingId: string; status: Booking["status"] }, { ok: boolean }>("updateBookingStatus", {
-        bookingId,
-        status: data.status,
-      });
-      return;
+      try {
+        await callFunction<{ bookingId: string; status: Booking["status"] }, { ok: boolean }>("updateBookingStatus", {
+          bookingId,
+          status: data.status,
+        });
+        return;
+      } catch (error) {
+        if (!isCallableUnavailableError(error)) {
+          throw error;
+        }
+      }
     }
 
     const current = await this.getBookingById(bookingId);
@@ -1397,7 +1675,7 @@ export const bookingService = {
               bookingId,
               status: data.status,
               changedAt: nowIso(),
-              changedBy: data.providerId || data.customerId || current?.providerId || current?.customerId || "system",
+              changedBy: getFirebaseAuth().currentUser?.uid || data.providerId || data.customerId || current?.providerId || current?.customerId || "system",
             },
           ]
         : undefined;
@@ -1416,6 +1694,14 @@ export const bookingService = {
       const slotId = buildBookingSlotId(slotProviderId, slotDate, slotTime);
       await deleteDoc(doc(getFirestore_(), "bookingSlots", slotId));
     }
+  },
+
+  async confirmAcceptedBooking(bookingId: string, userId?: string): Promise<void> {
+    await updateDoc(doc(getFirestore_(), "bookings", bookingId), {
+      customerAcceptanceConfirmedAt: nowIso(),
+      customerAcceptanceConfirmedBy: userId || getFirebaseAuth().currentUser?.uid || "system",
+      updatedAt: nowIso(),
+    });
   },
 
   // Cancel booking
@@ -1456,27 +1742,110 @@ export const bookingService = {
       where("providerId", "==", providerId),
       where("scheduledDate", "==", scheduledDate)
     );
-    return onSnapshot(q, (snapshot) => {
-      callback(
-        snapshot.docs
-          .map((entry) => entry.data()?.scheduledTime as string | undefined)
-          .filter(Boolean) as string[]
-      );
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(
+          snapshot.docs
+            .map((entry) => entry.data()?.scheduledTime as string | undefined)
+            .filter(Boolean) as string[]
+        );
+      },
+      (error) => handleSnapshotError("Reserved slots", error, () => callback([]))
+    );
   },
 
   subscribeCustomerBookings(customerId: string, callback: (bookings: Booking[]) => void): () => void {
     const q = query(collection(getFirestore_(), "bookings"), where("customerId", "==", customerId));
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map((entry) => entry.data() as Booking));
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(sortBookingsNewestFirst(snapshot.docs.map((entry) => entry.data() as Booking)));
+      },
+      (error) => handleSnapshotError("Customer bookings", error, () => callback([]))
+    );
   },
 
   subscribeProviderBookings(providerId: string, callback: (bookings: Booking[]) => void): () => void {
     const q = query(collection(getFirestore_(), "bookings"), where("providerId", "==", providerId));
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map((entry) => entry.data() as Booking));
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(sortBookingsNewestFirst(snapshot.docs.map((entry) => entry.data() as Booking)));
+      },
+      (error) => handleSnapshotError("Provider bookings", error, () => callback([]))
+    );
+  },
+};
+
+export const bookingChangeRequestService = {
+  async createRequest(
+    data: Omit<BookingChangeRequest, "requestId" | "status" | "createdAt" | "updatedAt">
+  ): Promise<string> {
+    const requestId = `change-${Date.now()}`;
+    const payload: BookingChangeRequest = {
+      ...data,
+      requestId,
+      status: "Pending",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    await setDoc(doc(getFirestore_(), "bookingChangeRequests", requestId), sanitizeForFirestore(payload));
+    return requestId;
+  },
+
+  async getRequestsByBooking(bookingId: string): Promise<BookingChangeRequest[]> {
+    const q = query(collection(getFirestore_(), "bookingChangeRequests"), where("bookingId", "==", bookingId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map((entry) => entry.data() as BookingChangeRequest);
+  },
+
+  async getAllRequests(): Promise<BookingChangeRequest[]> {
+    const snapshot = await getDocs(collection(getFirestore_(), "bookingChangeRequests"));
+    return snapshot.docs.map((entry) => entry.data() as BookingChangeRequest);
+  },
+
+  async updateRequestStatus(
+    requestId: string,
+    status: BookingChangeRequest["status"],
+    resolverId: string,
+    adminNotes?: string
+  ): Promise<void> {
+    const requestRef = doc(getFirestore_(), "bookingChangeRequests", requestId);
+    const requestSnap = await getDoc(requestRef);
+    if (!requestSnap.exists()) throw new Error("Change request not found");
+
+    const request = requestSnap.data() as BookingChangeRequest;
+    const batch = writeBatch(getFirestore_());
+    batch.set(
+      requestRef,
+      sanitizeForFirestore({
+        status,
+        resolvedBy: resolverId,
+        resolvedAt: nowIso(),
+        updatedAt: nowIso(),
+        adminNotes: adminNotes?.trim() || request.adminNotes || "",
+      }),
+      { merge: true }
+    );
+
+    if (status === "Approved") {
+      const bookingUpdate: Partial<Booking> = {
+        updatedAt: nowIso(),
+      };
+      if (request.type === "cancellation") {
+        bookingUpdate.status = "Cancelled";
+      }
+      if (request.type === "reschedule") {
+        bookingUpdate.scheduledDate = request.requestedDate || undefined;
+        bookingUpdate.scheduledTime = request.requestedTime || undefined;
+        bookingUpdate.scheduledAt = request.requestedScheduledAt || request.currentScheduledAt || undefined;
+      }
+      batch.set(doc(getFirestore_(), "bookings", request.bookingId), sanitizeForFirestore(bookingUpdate), { merge: true });
+    }
+
+    await batch.commit();
   },
 };
 
@@ -1487,14 +1856,28 @@ export const bookingService = {
 export const paymentService = {
   // Create payment
   async createPayment(paymentData: Omit<Payment, "paymentId">): Promise<string> {
-    const result = await callFunction<
-      { payment: Omit<Payment, "paymentId"> },
-      { paymentId: string }
-    >("createPaymentRecord", {
-      payment: paymentData,
-    });
+    try {
+      const result = await callFunction<
+        { payment: Omit<Payment, "paymentId"> },
+        { paymentId: string }
+      >("createPaymentRecord", {
+        payment: paymentData,
+      });
 
-    return result.paymentId;
+      return result.paymentId;
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+
+      const paymentId = `payment-${Date.now()}`;
+      await setDoc(doc(getFirestore_(), "payments", paymentId), {
+        ...paymentData,
+        paymentId,
+        createdAt: paymentData.createdAt || nowIso(),
+      } as Payment);
+      return paymentId;
+    }
   },
 
   // Get payment by ID
@@ -1505,9 +1888,29 @@ export const paymentService = {
   },
 
   async getPaymentByBookingId(bookingId: string): Promise<Payment | null> {
-    const q = query(collection(getFirestore_(), "payments"), where("bookingId", "==", bookingId));
-    const snapshot = await getDocs(q);
-    return snapshot.empty ? null : (snapshot.docs[0].data() as Payment);
+    const currentUserId = getFirebaseAuth().currentUser?.uid;
+    if (!currentUserId) {
+      const q = query(collection(getFirestore_(), "payments"), where("bookingId", "==", bookingId));
+      const snapshot = await getDocs(q);
+      return snapshot.empty ? null : (snapshot.docs[0].data() as Payment);
+    }
+
+    const customerSnapshot = await getDocs(
+      query(collection(getFirestore_(), "payments"), where("customerId", "==", currentUserId))
+    );
+    const customerPayment = customerSnapshot.docs
+      .map((doc) => doc.data() as Payment)
+      .find((payment) => payment.bookingId === bookingId);
+    if (customerPayment) {
+      return customerPayment;
+    }
+
+    const providerSnapshot = await getDocs(
+      query(collection(getFirestore_(), "payments"), where("providerId", "==", currentUserId))
+    );
+    return providerSnapshot.docs
+      .map((doc) => doc.data() as Payment)
+      .find((payment) => payment.bookingId === bookingId) ?? null;
   },
 
   // Get customer payments
@@ -1526,10 +1929,21 @@ export const paymentService = {
 
   // Update payment status
   async updatePaymentStatus(paymentId: string, status: string): Promise<void> {
-    await callFunction<{ paymentId: string; status: string }, { ok: boolean }>("updatePaymentStatus", {
-      paymentId,
-      status,
-    });
+    try {
+      await callFunction<{ paymentId: string; status: string }, { ok: boolean }>("updatePaymentStatus", {
+        paymentId,
+        status,
+      });
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+      await updateDoc(doc(getFirestore_(), "payments", paymentId), { status });
+    }
+  },
+
+  async updatePayment(paymentId: string, data: Partial<Pick<Payment, "amount" | "method" | "status">>): Promise<void> {
+    await updateDoc(doc(getFirestore_(), "payments", paymentId), sanitizeForFirestore(data));
   },
 
   // Get all payments (admin)
@@ -1578,6 +1992,7 @@ export const messagingService = {
       bookingId,
       participants,
       archivedFor: [],
+      pinnedFor: [],
       lastMessage: "",
       updatedAt: new Date().toISOString(),
     } as MessageThread);
@@ -1627,7 +2042,7 @@ export const messagingService = {
 
   async markThreadAsRead(threadId: string, readerId: string): Promise<void> {
     const messages = await this.getThreadMessages(threadId);
-    const unread = messages.filter((message) => message.senderId !== readerId && !message.readAt);
+    const unread = messages.filter((message) => message.senderId !== readerId && !message.readBy?.[readerId]);
     await Promise.all(
       unread.map((message) =>
         updateDoc(doc(getFirestore_(), "messages", message.messageId), {
@@ -1643,6 +2058,21 @@ export const messagingService = {
       },
       { merge: true }
     );
+  },
+
+  async markThreadAsUnread(threadId: string, readerId: string): Promise<void> {
+    const messages = await this.getThreadMessages(threadId);
+    const incoming = messages.filter((message) => message.senderId !== readerId);
+    await Promise.all(
+      incoming.map((message) =>
+        updateDoc(doc(getFirestore_(), "messages", message.messageId), {
+          [`readBy.${readerId}`]: deleteField(),
+        })
+      )
+    );
+    await updateDoc(doc(getFirestore_(), "messageThreads", threadId), {
+      [`readBy.${readerId}`]: deleteField(),
+    });
   },
 
   // Get thread messages
@@ -1699,33 +2129,51 @@ export const messagingService = {
     await setDoc(ref, { archivedFor }, { merge: true });
   },
 
+  async pinThread(threadId: string, userId: string): Promise<void> {
+    const ref = doc(getFirestore_(), "messageThreads", threadId);
+    const current = await getDoc(ref);
+    const thread = current.exists() ? (current.data() as MessageThread) : null;
+    const pinnedFor = Array.from(new Set([...(thread?.pinnedFor ?? []), userId]));
+    await setDoc(ref, { pinnedFor }, { merge: true });
+  },
+
+  async unpinThread(threadId: string, userId: string): Promise<void> {
+    const ref = doc(getFirestore_(), "messageThreads", threadId);
+    const current = await getDoc(ref);
+    const thread = current.exists() ? (current.data() as MessageThread) : null;
+    const pinnedFor = (thread?.pinnedFor ?? []).filter((entry) => entry !== userId);
+    await setDoc(ref, { pinnedFor }, { merge: true });
+  },
+
   async deleteThread(threadId: string): Promise<void> {
-    const messages = await this.getThreadMessages(threadId);
-    await mediaService.deleteStoredMedia(
-      messages.flatMap((message) =>
-        (message.attachmentItems?.length ? message.attachmentItems : message.attachments || []) as Array<string | MediaAttachment>
-      )
-    );
-    const batch = writeBatch(getFirestore_());
-    messages.forEach((message) => {
-      batch.delete(doc(getFirestore_(), "messages", message.messageId));
-    });
-    batch.delete(doc(getFirestore_(), "messageThreads", threadId));
-    await batch.commit();
+    await callFunction<{ threadIds: string[] }, { deleted: number }>("deleteMessageThreads", { threadIds: [threadId] });
+  },
+
+  async deleteThreads(threadIds: string[]): Promise<void> {
+    if (!threadIds.length) return;
+    await callFunction<{ threadIds: string[] }, { deleted: number }>("deleteMessageThreads", { threadIds });
   },
 
   subscribeThreadMessages(threadId: string, callback: (messages: Message[]) => void): () => void {
     const q = query(collection(getFirestore_(), "messages"), where("threadId", "==", threadId));
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map((entry) => entry.data() as Message));
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(snapshot.docs.map((entry) => entry.data() as Message));
+      },
+      (error) => handleSnapshotError("Thread messages", error, () => callback([]))
+    );
   },
 
   subscribeUserThreads(userId: string, callback: (threads: MessageThread[]) => void): () => void {
     const q = query(collection(getFirestore_(), "messageThreads"), where("participants", "array-contains", userId));
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map((entry) => entry.data() as MessageThread));
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(snapshot.docs.map((entry) => entry.data() as MessageThread));
+      },
+      (error) => handleSnapshotError("User threads", error, () => callback([]))
+    );
   },
 };
 
@@ -1737,14 +2185,26 @@ export const reviewService = {
   // Create review
   async createReview(reviewData: Omit<Review, "reviewId">): Promise<string> {
     const reviewId = `review-${Date.now()}`;
-    const mediaItems = reviewData.mediaItems?.length
-      ? reviewData.mediaItems
-      : await mediaService.uploadMany(reviewData.mediaUrls || [], `reviews/${reviewData.providerId}/${reviewId}`, reviewData.customerId);
+    let mediaItems: MediaAttachment[] = reviewData.mediaItems?.length ? reviewData.mediaItems : [];
+    let mediaUrls = reviewData.mediaUrls || [];
+
+    if (!mediaItems.length && mediaUrls.length) {
+      try {
+        mediaItems = await mediaService.uploadMany(mediaUrls, `reviews/${reviewData.providerId}/${reviewId}`, reviewData.customerId);
+        mediaUrls = mediaItems.map((item) => item.url);
+      } catch (error) {
+        if (!isCallableUnavailableError(error)) {
+          throw error;
+        }
+        mediaItems = [];
+        mediaUrls = mediaUrls.filter(isFirestoreSafeUrl);
+      }
+    }
 
     await setDoc(doc(getFirestore_(), "reviews", reviewId), {
       ...reviewData,
       reviewId,
-      mediaUrls: mediaItems.map((item) => item.url),
+      mediaUrls,
       mediaItems,
       createdAt: nowIso(),
     } as Review);
@@ -1757,6 +2217,17 @@ export const reviewService = {
     const q = query(collection(getFirestore_(), "reviews"), where("providerId", "==", providerId));
     const snapshot = await getDocs(q);
     return snapshot.docs.map((doc) => doc.data() as Review);
+  },
+
+  async getReviewForBooking(bookingId: string, customerId: string): Promise<Review | null> {
+    const q = query(
+      collection(getFirestore_(), "reviews"),
+      where("bookingId", "==", bookingId),
+      limit(1)
+    );
+    const snapshot = await getDocs(q);
+    const review = snapshot.empty ? null : (snapshot.docs[0].data() as Review);
+    return review?.customerId === customerId ? review : null;
   },
 
   // Get average rating for provider
@@ -1778,6 +2249,334 @@ export const reviewService = {
 };
 
 // ============================================================================
+// COMMUNITY POST SERVICES
+// ============================================================================
+
+export const communityPostService = {
+  async createPost(data: Omit<CommunityPost, "postId" | "status" | "likes" | "comments" | "createdAt" | "updatedAt">): Promise<string> {
+    const postId = `post-${Date.now()}`;
+    const createdAt = nowIso();
+    const attachmentItems = data.attachments?.length
+      ? await mediaService.uploadMany(data.attachments, `communityPosts/${postId}/attachments`, data.customerId)
+      : data.attachmentItems || [];
+    await setDoc(doc(getFirestore_(), "communityPosts", postId), sanitizeForFirestore({
+      ...data,
+      postId,
+      status: "Open",
+      likes: [],
+      comments: [],
+      attachments: attachmentItems.map((item) => item.url),
+      attachmentItems,
+      photoEngagements: attachmentItems.map((item, index) => ({
+        photoId: item.id || `photo-${index}`,
+        url: item.url,
+        likes: [],
+        comments: [],
+        createdAt,
+        updatedAt: createdAt,
+      })),
+      createdAt,
+      updatedAt: createdAt,
+    } as CommunityPost));
+    return postId;
+  },
+
+  subscribePosts(callback: (posts: CommunityPost[]) => void): () => void {
+    const q = query(collection(getFirestore_(), "communityPosts"));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(
+          snapshot.docs
+            .map((entry) => entry.data() as CommunityPost)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        );
+      },
+      (error) => handleSnapshotError("Community posts", error, () => callback([]))
+    );
+  },
+
+  async updatePost(postId: string, data: Partial<Pick<CommunityPost, "serviceCategoryId" | "serviceName" | "body" | "address" | "location" | "preferredSchedule" | "amount" | "attachments">>): Promise<void> {
+    const postRef = doc(getFirestore_(), "communityPosts", postId);
+    const currentSnap = await getDoc(postRef);
+    const currentPost = currentSnap.exists() ? (currentSnap.data() as CommunityPost) : null;
+    const payload: Partial<CommunityPost> = { ...data };
+
+    if (data.attachments) {
+      const existingItems = currentPost?.attachmentItems || [];
+      const existingByUrl = new Map(existingItems.map((item) => [item.url, item]));
+      const keptItems = data.attachments
+        .filter((item) => !item.startsWith("data:"))
+        .map((url) => existingByUrl.get(url) || ({ url, fileName: "attachment", uploadedAt: nowIso() } as MediaAttachment));
+      const removedItems = existingItems.filter((item) => !data.attachments?.includes(item.url));
+      const newItems = await mediaService.uploadMany(
+        data.attachments.filter((item) => item.startsWith("data:")),
+        `communityPosts/${postId}/attachments`,
+        currentPost?.customerId
+      );
+      if (removedItems.length) {
+        await mediaService.deleteStoredMedia(removedItems);
+      }
+      const attachmentItems = [...keptItems, ...newItems];
+      payload.attachments = attachmentItems.map((item) => item.url);
+      payload.attachmentItems = attachmentItems;
+      payload.photoEngagements = attachmentItems.map((item, index) => {
+        const existing = currentPost?.photoEngagements?.find((photo) => photo.url === item.url);
+        if (existing) return { ...existing, photoId: existing.photoId || item.id || `photo-${index}`, url: item.url };
+        return {
+          photoId: item.id || `photo-${index}-${Date.now()}`,
+          url: item.url,
+          likes: [],
+          comments: [],
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        };
+      });
+    }
+
+    await updateDoc(doc(getFirestore_(), "communityPosts", postId), sanitizeForFirestore({
+      ...payload,
+      updatedAt: nowIso(),
+    }));
+  },
+
+  async deletePost(postId: string): Promise<void> {
+    const postRef = doc(getFirestore_(), "communityPosts", postId);
+    const existing = await getDoc(postRef);
+    const post = existing.exists() ? (existing.data() as CommunityPost) : null;
+    if (post) {
+      const mediaItems = post.attachmentItems?.length ? post.attachmentItems : post.attachments || [];
+      if (mediaItems.length) {
+        await mediaService.deleteStoredMedia(mediaItems);
+      }
+    }
+    await deleteDoc(postRef);
+  },
+
+  async toggleLike(postId: string, userId: string): Promise<void> {
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) return;
+      const post = postSnap.data() as CommunityPost;
+      const likes = post.likes || [];
+      transaction.update(postRef, {
+        likes: likes.includes(userId) ? likes.filter((id) => id !== userId) : [...likes, userId],
+        updatedAt: nowIso(),
+      });
+    });
+  },
+
+  async addComment(postId: string, userId: string, body: string, attachments: Array<string | MediaAttachment> = []): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed && !attachments.length) return;
+    const commentId = `comment-${Date.now()}`;
+    const attachmentItems = attachments.length
+      ? await mediaService.uploadMany(attachments, `communityPosts/${postId}/comments/${commentId}`, userId)
+      : [];
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) return;
+      const post = postSnap.data() as CommunityPost;
+      const comment: CommunityPostComment = {
+        commentId,
+        userId,
+        body: trimmed,
+        attachments: attachmentItems.map((item) => item.url),
+        attachmentItems,
+        createdAt: nowIso(),
+      };
+      transaction.update(postRef, {
+        comments: [...(post.comments || []), comment],
+        updatedAt: nowIso(),
+      });
+    });
+  },
+
+  async addCommentReply(
+    postId: string,
+    parentCommentId: string,
+    userId: string,
+    body: string,
+    attachments: Array<string | MediaAttachment> = []
+  ): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed && !attachments.length) return;
+    const replyId = `reply-${Date.now()}`;
+    const attachmentItems = attachments.length
+      ? await mediaService.uploadMany(attachments, `communityPosts/${postId}/comments/${parentCommentId}/replies/${replyId}`, userId)
+      : [];
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) return;
+      const post = postSnap.data() as CommunityPost;
+      const reply: CommunityPostComment = {
+        commentId: replyId,
+        userId,
+        body: trimmed,
+        attachments: attachmentItems.map((item) => item.url),
+        attachmentItems,
+        replies: [],
+        createdAt: nowIso(),
+      };
+      transaction.update(postRef, {
+        comments: (post.comments || []).map((comment) =>
+          comment.commentId === parentCommentId
+            ? { ...comment, replies: [...(comment.replies || []), reply] }
+            : comment
+        ),
+        updatedAt: nowIso(),
+      });
+    });
+  },
+
+  async togglePhotoLike(postId: string, photoId: string, photoUrl: string, userId: string): Promise<void> {
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) return;
+      const post = postSnap.data() as CommunityPost;
+      const current = post.photoEngagements || [];
+      const existing = current.find((photo) => photo.photoId === photoId || photo.url === photoUrl);
+      const nextPhoto: CommunityPostPhotoEngagement = existing
+        ? {
+            ...existing,
+            photoId: existing.photoId || photoId,
+            url: existing.url || photoUrl,
+            likes: (existing.likes || []).includes(userId)
+              ? (existing.likes || []).filter((id) => id !== userId)
+              : [...(existing.likes || []), userId],
+            updatedAt: nowIso(),
+          }
+        : {
+            photoId,
+            url: photoUrl,
+            likes: [userId],
+            comments: [],
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          };
+
+      transaction.update(postRef, {
+        photoEngagements: existing
+          ? current.map((photo) => (photo.photoId === existing.photoId || photo.url === existing.url ? nextPhoto : photo))
+          : [...current, nextPhoto],
+        updatedAt: nowIso(),
+      });
+    });
+  },
+
+  async addPhotoComment(postId: string, photoId: string, photoUrl: string, userId: string, body: string): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) return;
+      const post = postSnap.data() as CommunityPost;
+      const current = post.photoEngagements || [];
+      const existing = current.find((photo) => photo.photoId === photoId || photo.url === photoUrl);
+      const comment: CommunityPostComment = {
+        commentId: `photo-comment-${Date.now()}`,
+        userId,
+        body: trimmed,
+        attachments: [],
+        attachmentItems: [],
+        createdAt: nowIso(),
+      };
+      const nextPhoto: CommunityPostPhotoEngagement = existing
+        ? {
+            ...existing,
+            photoId: existing.photoId || photoId,
+            url: existing.url || photoUrl,
+            comments: [...(existing.comments || []), comment],
+            updatedAt: nowIso(),
+          }
+        : {
+            photoId,
+            url: photoUrl,
+            likes: [],
+            comments: [comment],
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          };
+
+      transaction.update(postRef, {
+        photoEngagements: existing
+          ? current.map((photo) => (photo.photoId === existing.photoId || photo.url === existing.url ? nextPhoto : photo))
+          : [...current, nextPhoto],
+        updatedAt: nowIso(),
+      });
+    });
+  },
+
+  async claimPostAsBooking(postId: string, providerId: string): Promise<string> {
+    const bookingId = `booking-${Date.now()}`;
+    const claimedAt = nowIso();
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const postRef = doc(getFirestore_(), "communityPosts", postId);
+      const bookingRef = doc(getFirestore_(), "bookings", bookingId);
+      const postSnap = await transaction.get(postRef);
+      if (!postSnap.exists()) throw new Error("This post is no longer available.");
+      const post = postSnap.data() as CommunityPost;
+      if (post.status !== "Open" || post.bookingId) {
+        throw new Error("Another worker already claimed this post.");
+      }
+
+      transaction.set(bookingRef, sanitizeForFirestore({
+        bookingId,
+        customerId: post.customerId,
+        providerId,
+        serviceCategoryId: post.serviceCategoryId,
+        serviceName: post.serviceName,
+        scheduledAt: post.preferredSchedule || "Flexible schedule",
+        address: post.address,
+        location: post.location || post.address,
+        notes: post.body,
+        status: "Accepted",
+        amount: Number(post.amount || 0),
+        workerAcceptedAt: claimedAt,
+        statusHistory: [
+          {
+            bookingId,
+            status: "Accepted",
+            changedAt: claimedAt,
+            changedBy: providerId,
+            note: "Worker claimed this community post.",
+          },
+        ],
+        createdAt: claimedAt,
+        updatedAt: claimedAt,
+      } as Booking));
+
+      transaction.update(postRef, {
+        status: "Booked",
+        claimedProviderId: providerId,
+        bookingId,
+        updatedAt: claimedAt,
+      });
+    });
+    return bookingId;
+  },
+
+  async deletePostsForCompletedBooking(bookingId: string): Promise<void> {
+    const snapshot = await getDocs(query(collection(getFirestore_(), "communityPosts"), where("bookingId", "==", bookingId)));
+    await Promise.all(
+      snapshot.docs.map(async (entry) => {
+        const post = entry.data() as CommunityPost;
+        const mediaItems = post.attachmentItems?.length ? post.attachmentItems : post.attachments || [];
+        if (mediaItems.length) {
+          await mediaService.deleteStoredMedia(mediaItems);
+        }
+        await deleteDoc(entry.ref);
+      })
+    );
+  },
+};
+
+// ============================================================================
 // NOTIFICATION SERVICES
 // ============================================================================
 
@@ -1786,11 +2585,11 @@ export const notificationService = {
   async createNotification(data: Omit<NotificationItem, "notificationId">): Promise<string> {
     const notificationId = `notif-${Date.now()}`;
 
-    await setDoc(doc(getFirestore_(), "notifications", notificationId), {
+    await setDoc(doc(getFirestore_(), "notifications", notificationId), sanitizeForFirestore({
       ...data,
       notificationId,
       createdAt: nowIso(),
-    } as NotificationItem);
+    } as NotificationItem));
 
     return notificationId;
   },
@@ -1811,6 +2610,19 @@ export const notificationService = {
     await batch.commit();
   },
 
+  async deleteNotification(notificationId: string): Promise<void> {
+    await callFunction<{ notificationIds: string[] }, { deleted: number }>("deleteUserNotifications", { notificationIds: [notificationId] });
+  },
+
+  async deleteMany(notificationIds: string[]): Promise<void> {
+    if (!notificationIds.length) return;
+    await callFunction<{ notificationIds: string[] }, { deleted: number }>("deleteUserNotifications", { notificationIds });
+  },
+
+  async deleteAllForUser(_userId: string): Promise<void> {
+    await callFunction<{ deleteAll: true }, { deleted: number }>("deleteUserNotifications", { deleteAll: true });
+  },
+
   // Mark notification as read
   async markAsRead(notificationId: string): Promise<void> {
     await updateDoc(doc(getFirestore_(), "notifications", notificationId), { isRead: true });
@@ -1818,9 +2630,13 @@ export const notificationService = {
 
   subscribeUserNotifications(userId: string, callback: (notifications: NotificationItem[]) => void): () => void {
     const q = query(collection(getFirestore_(), "notifications"), where("userId", "==", userId));
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map((entry) => entry.data() as NotificationItem));
-    });
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        callback(snapshot.docs.map((entry) => entry.data() as NotificationItem));
+      },
+      (error) => handleSnapshotError("User notifications", error, () => callback([]))
+    );
   },
 };
 
@@ -1892,9 +2708,12 @@ export default {
   mediaService,
   pushTokenService,
   providerService,
+  providerPortfolioService,
   categoryService,
   bookingConflictService,
   bookingService,
+  bookingChangeRequestService,
+  communityPostService,
   paymentService,
   messagingService,
   reviewService,

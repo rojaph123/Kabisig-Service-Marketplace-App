@@ -36,6 +36,18 @@ service cloud.firestore {
         && unchanged("documentsStatus");
     }
 
+    function providerOwnerCanSubmitApplication() {
+      return isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && resource.data.approvalStatus in ["Draft", "Revision Requested"]
+        && request.resource.data.approvalStatus == "Pending Approval"
+        && request.resource.data.isApproved == false
+        && unchanged("earningsSummary")
+        && unchanged("rating")
+        && unchanged("documentsStatus");
+    }
+
     function providerApplicationOwnerCanEdit() {
       return isSignedIn()
         && resource.data.userId == request.auth.uid
@@ -43,6 +55,14 @@ service cloud.firestore {
         && unchanged("reviewedBy")
         && unchanged("reviewedAt")
         && unchanged("reviewNotes");
+    }
+
+    function bookingParticipant(bookingId) {
+      return isSignedIn()
+        && (
+          get(/databases/$(database)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid
+          || get(/databases/$(database)/documents/bookings/$(bookingId)).data.providerId == request.auth.uid
+        );
     }
 
     match /users/{userId} {
@@ -58,7 +78,7 @@ service cloud.firestore {
           && unchanged("authProvider")
           && unchanged("createdAt")
         );
-      allow delete: if hasRole("admin");
+      allow delete: if hasRole("admin") || (isSignedIn() && resource.data.userId == request.auth.uid);
     }
 
     match /customerProfiles/{userId} {
@@ -70,7 +90,7 @@ service cloud.firestore {
     match /providerProfiles/{userId} {
       allow read: if isSignedIn();
       allow create: if hasRole("admin") || (isOwner(userId) && request.resource.data.userId == request.auth.uid);
-      allow update: if hasRole("admin") || providerOwnerCanEdit();
+      allow update: if hasRole("admin") || providerOwnerCanEdit() || providerOwnerCanSubmitApplication();
       allow delete: if hasRole("admin");
     }
 
@@ -91,10 +111,28 @@ service cloud.firestore {
       allow update, delete: if hasRole("admin");
     }
 
+    match /bookingChangeRequests/{requestId} {
+      allow read: if hasRole("admin")
+        || (
+          isSignedIn()
+          && (
+            resource.data.requestedBy == request.auth.uid
+            || resource.data.targetUserId == request.auth.uid
+            || bookingParticipant(resource.data.bookingId)
+          )
+        );
+      allow create: if isSignedIn()
+        && request.resource.data.requestedBy == request.auth.uid
+        && request.resource.data.status == "Pending"
+        && bookingParticipant(request.resource.data.bookingId);
+      allow update, delete: if hasRole("admin");
+    }
+
     match /bookingSlots/{slotId} {
       allow read: if hasRole("admin") || isSignedIn();
       allow create: if hasRole("admin") || isSignedIn();
-      allow update, delete: if hasRole("admin");
+      allow update: if hasRole("admin");
+      allow delete: if hasRole("admin") || isSignedIn();
     }
 
     match /pushNotificationTokens/{tokenId} {
@@ -122,14 +160,64 @@ service cloud.firestore {
 
     match /bookings/{bookingId} {
       allow read: if hasRole("admin") || (isSignedIn() && (resource.data.customerId == request.auth.uid || resource.data.providerId == request.auth.uid));
-      allow create: if isSignedIn() && request.resource.data.customerId == request.auth.uid;
-      allow update: if hasRole("admin");
+      allow create: if (isSignedIn() && request.resource.data.customerId == request.auth.uid)
+        || (
+          isSignedIn()
+          && request.resource.data.providerId == request.auth.uid
+          && request.resource.data.status == "Accepted"
+          && userExists(request.resource.data.customerId)
+        );
+      allow update: if hasRole("admin")
+        || (
+          isSignedIn()
+          && resource.data.providerId == request.auth.uid
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["status", "statusHistory", "updatedAt"])
+          && request.resource.data.status in ["Accepted", "On the Way", "In Progress", "Completed"]
+          && request.resource.data.customerId == resource.data.customerId
+          && request.resource.data.providerId == resource.data.providerId
+        )
+        || (
+          isSignedIn()
+          && resource.data.customerId == request.auth.uid
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["status", "statusHistory", "updatedAt"])
+          && request.resource.data.status == "Cancelled"
+          && request.resource.data.providerId == resource.data.providerId
+        )
+        || (
+          isSignedIn()
+          && resource.data.customerId == request.auth.uid
+          && resource.data.status == "Accepted"
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.customerId == resource.data.customerId
+          && request.resource.data.providerId == resource.data.providerId
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["customerAcceptanceConfirmedAt", "customerAcceptanceConfirmedBy", "updatedAt"])
+          && request.resource.data.customerAcceptanceConfirmedBy == request.auth.uid
+        )
+        || (
+          isSignedIn()
+          && resource.data.customerId == request.auth.uid
+          && resource.data.status == "Pending"
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly(["address", "notes", "attachments", "updatedAt"])
+          && request.resource.data.customerId == resource.data.customerId
+          && request.resource.data.providerId == resource.data.providerId
+        );
       allow delete: if hasRole("admin");
     }
 
     match /payments/{paymentId} {
       allow read: if hasRole("admin") || (isSignedIn() && (resource.data.customerId == request.auth.uid || resource.data.providerId == request.auth.uid));
-      allow create, update: if hasRole("admin");
+      allow create: if hasRole("admin") || (
+        isSignedIn()
+        && (request.resource.data.customerId == request.auth.uid || request.resource.data.providerId == request.auth.uid)
+      );
+      allow update: if hasRole("admin") || (
+        isSignedIn()
+        && (resource.data.customerId == request.auth.uid || resource.data.providerId == request.auth.uid)
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.providerId == resource.data.providerId
+        && request.resource.data.bookingId == resource.data.bookingId
+      );
       allow delete: if hasRole("admin");
     }
 
@@ -158,7 +246,23 @@ service cloud.firestore {
         && request.resource.data.userId != null
         && userExists(request.resource.data.userId)
       );
-      allow delete: if hasRole("admin");
+      allow delete: if hasRole("admin") || (isSignedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    match /communityPosts/{postId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.status == "Open";
+      allow update: if isSignedIn();
+      allow delete: if hasRole("admin")
+        || (
+          isSignedIn()
+          && (
+            resource.data.customerId == request.auth.uid
+            || resource.data.claimedProviderId == request.auth.uid
+          )
+        );
     }
 
     match /complaints/{reportId} {

@@ -9,5 +9,5 @@ coverage
 .env.local
 mobile-app/.expo
 mobile-app/.expo-shared
+mobile-app/.expo-qa-export
 admin-web/.next
-

@@ -37,10 +37,10 @@ export const kabisigThemeModes = {
     borderDark: "#94A3B8"
   },
   dark: {
-    primary: "#60A5FA",
-    primaryDark: "#1D4ED8",
-    primarySoft: "#1E3A8A",
-    primaryLight: "#1E40AF",
+    primary: "#2563EB",
+    primaryDark: "#BFDBFE",
+    primarySoft: "#183B73",
+    primaryLight: "#1D4ED8",
 
     accent: "#38BDF8",
     accentDark: "#0EA5E9",

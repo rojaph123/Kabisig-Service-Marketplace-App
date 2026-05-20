@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { categoryService, coverageAreaService, type CoverageArea } from "@kabisig/shared";
+import { categoryService, coverageAreaService, marketplaceConfigService, type CoverageArea } from "@kabisig/shared";
 import { Card, DataTable, EmptyPanel, Topbar } from "../../../components/ui";
-import { loadMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
+import { logAdminAction } from "../../../lib/admin-actions";
+import { useAdminAuth } from "../../../lib/auth-context";
+import { loadConfiguredCoverageAreas, loadMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
 
 const iconOptions = [
   "flash-outline",
@@ -13,7 +15,9 @@ const iconOptions = [
   "home-outline",
   "construct-outline",
   "build-outline",
+  "snow-outline",
   "color-palette-outline",
+  "grid-outline",
   "car-sport-outline",
   "bicycle-outline"
 ];
@@ -24,6 +28,24 @@ const categorySuggestions: Record<string, { icon: string; iconColor: string; des
     iconColor: "#7C3AED",
     description: "Interior and exterior painting, repainting, and finishing services.",
     startingPrice: "650"
+  },
+  carpenter: {
+    icon: "hammer-outline",
+    iconColor: "#B45309",
+    description: "Wood framing, cabinets, doors, fixtures, and general carpentry repair services.",
+    startingPrice: "900"
+  },
+  "construction worker": {
+    icon: "hammer-outline",
+    iconColor: "#B45309",
+    description: "Wood framing, cabinets, doors, fixtures, and general carpentry repair services.",
+    startingPrice: "900"
+  },
+  "tile setter": {
+    icon: "grid-outline",
+    iconColor: "#64748B",
+    description: "Floor and wall tile layout, installation, grout repair, and finishing services.",
+    startingPrice: "850"
   },
   "car mechanic": {
     icon: "car-sport-outline",
@@ -36,6 +58,12 @@ const categorySuggestions: Record<string, { icon: string; iconColor: string; des
     iconColor: "#0F766E",
     description: "Motorcycle repair, tune-ups, diagnostics, and maintenance services.",
     startingPrice: "700"
+  },
+  "aircon repair": {
+    icon: "snow-outline",
+    iconColor: "#0284C7",
+    description: "Air conditioner cleaning, diagnostics, repair, freon checks, and cooling maintenance.",
+    startingPrice: "850"
   }
 };
 
@@ -44,6 +72,7 @@ function toCategoryId(name: string) {
 }
 
 export default function CategoriesPage() {
+  const { admin } = useAdminAuth();
   const [snapshot, setSnapshot] = useState<MarketplaceSnapshot | null>(null);
   const [coverageAreas, setCoverageAreas] = useState<CoverageArea[]>([]);
   const [form, setForm] = useState({ name: "", icon: "construct-outline", iconColor: "#2563EB", description: "", startingPrice: "0" });
@@ -54,11 +83,14 @@ export default function CategoriesPage() {
   const [editingCoverageId, setEditingCoverageId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deletingCoverageId, setDeletingCoverageId] = useState<string | null>(null);
+  const [togglingCategoryId, setTogglingCategoryId] = useState<string | null>(null);
+  const [togglingCoverageId, setTogglingCoverageId] = useState<string | null>(null);
 
   async function reload() {
+    await marketplaceConfigService.ensureDefaultMarketplaceData();
     const [nextSnapshot, nextCoverageAreas] = await Promise.all([
       loadMarketplaceSnapshot(),
-      coverageAreaService.getAllCoverageAreas()
+      loadConfiguredCoverageAreas()
     ]);
     setSnapshot(nextSnapshot);
     setCoverageAreas(nextCoverageAreas);
@@ -79,13 +111,21 @@ export default function CategoriesPage() {
         icon: form.icon.trim() || "construct-outline",
         iconColor: form.iconColor,
         description: form.description.trim(),
-        startingPrice: Number(form.startingPrice) || 0
+        startingPrice: Number(form.startingPrice) || 0,
+        active: true
       };
 
       if (editingId) {
         await categoryService.updateCategory(editingId, payload);
+        await logAdminAction(admin, "category_updated", "serviceCategories", editingId, `Updated service category ${payload.name}.`, {
+          active: payload.active,
+          startingPrice: payload.startingPrice,
+        });
       } else {
         await categoryService.createCategory(payload);
+        await logAdminAction(admin, "category_created", "serviceCategories", generatedId, `Created service category ${payload.name}.`, {
+          startingPrice: payload.startingPrice,
+        });
       }
 
       setForm({ name: "", icon: "construct-outline", iconColor: "#2563EB", description: "", startingPrice: "0" });
@@ -100,6 +140,7 @@ export default function CategoriesPage() {
     setDeletingId(categoryId);
     try {
       await categoryService.deleteCategory(categoryId);
+      await logAdminAction(admin, "category_deleted", "serviceCategories", categoryId, `Deleted service category ${categoryId}.`);
       if (editingId === categoryId) {
         setEditingId(null);
         setForm({ name: "", icon: "construct-outline", iconColor: "#2563EB", description: "", startingPrice: "0" });
@@ -107,6 +148,19 @@ export default function CategoriesPage() {
       await reload();
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleToggleCategory(categoryId: string, nextActive: boolean) {
+    setTogglingCategoryId(categoryId);
+    try {
+      await categoryService.updateCategory(categoryId, { active: nextActive });
+      await logAdminAction(admin, "category_updated", "serviceCategories", categoryId, `${nextActive ? "Enabled" : "Disabled"} service category ${categoryId}.`, {
+        active: nextActive,
+      });
+      await reload();
+    } finally {
+      setTogglingCategoryId(null);
     }
   }
 
@@ -123,8 +177,14 @@ export default function CategoriesPage() {
 
       if (editingCoverageId) {
         await coverageAreaService.updateCoverageArea(editingCoverageId, payload);
+        await logAdminAction(admin, "coverage_area_updated", "coverageAreas", editingCoverageId, `Updated service area ${payload.name}.`, {
+          active: payload.active,
+        });
       } else {
         await coverageAreaService.createCoverageArea(payload);
+        await logAdminAction(admin, "coverage_area_created", "coverageAreas", generatedId, `Created service area ${payload.name}.`, {
+          active: payload.active,
+        });
       }
 
       setCoverageForm({ name: "" });
@@ -139,6 +199,7 @@ export default function CategoriesPage() {
     setDeletingCoverageId(coverageAreaId);
     try {
       await coverageAreaService.deleteCoverageArea(coverageAreaId);
+      await logAdminAction(admin, "coverage_area_deleted", "coverageAreas", coverageAreaId, `Deleted service area ${coverageAreaId}.`);
       if (editingCoverageId === coverageAreaId) {
         setEditingCoverageId(null);
         setCoverageForm({ name: "" });
@@ -146,6 +207,19 @@ export default function CategoriesPage() {
       await reload();
     } finally {
       setDeletingCoverageId(null);
+    }
+  }
+
+  async function handleToggleCoverageArea(coverageAreaId: string, nextActive: boolean) {
+    setTogglingCoverageId(coverageAreaId);
+    try {
+      await coverageAreaService.updateCoverageArea(coverageAreaId, { active: nextActive });
+      await logAdminAction(admin, "coverage_area_updated", "coverageAreas", coverageAreaId, `${nextActive ? "Enabled" : "Disabled"} service area ${coverageAreaId}.`, {
+        active: nextActive,
+      });
+      await reload();
+    } finally {
+      setTogglingCoverageId(null);
     }
   }
 
@@ -194,13 +268,23 @@ export default function CategoriesPage() {
         </div>
         {snapshot?.categories.length ? (
           <DataTable
-            columns={["Category", "Description", "Starting Price", "Icon", "Color", "Actions"]}
+            columns={["Category", "Description", "Starting Price", "Icon", "Color", "Status", "Actions"]}
             rows={snapshot.categories.map((category) => [
               category.name,
               category.description,
               `PHP ${category.startingPrice.toLocaleString()}`,
               category.icon,
               <div key={`${category.id}-color`} className="h-6 w-6 rounded-full ring-1 ring-slate-300" style={{ backgroundColor: category.iconColor || "#2563EB" }} />,
+              <span
+                key={`${category.id}-status`}
+                className={`rounded-full px-3 py-1 text-xs font-bold ${
+                  category.active === false
+                    ? "bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300"
+                    : "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                }`}
+              >
+                {category.active === false ? "Disabled" : "Active"}
+              </span>,
               <div key={`${category.id}-actions`} className="flex gap-2">
                 <button
                   className="rounded-xl border border-kabisig-border px-3 py-2 text-xs font-bold text-kabisig-text"
@@ -216,6 +300,13 @@ export default function CategoriesPage() {
                   }}
                 >
                   Edit
+                </button>
+                <button
+                  className="rounded-xl border border-kabisig-border px-3 py-2 text-xs font-bold text-kabisig-text"
+                  disabled={togglingCategoryId === category.id}
+                  onClick={() => void handleToggleCategory(category.id, category.active === false)}
+                >
+                  {togglingCategoryId === category.id ? "Saving..." : category.active === false ? "Enable" : "Disable"}
                 </button>
                 <button
                   className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300"
@@ -259,9 +350,19 @@ export default function CategoriesPage() {
         </div>
         {coverageAreas.length ? (
           <DataTable
-            columns={["Coverage Area", "Actions"]}
+            columns={["Coverage Area", "Status", "Actions"]}
             rows={coverageAreas.map((coverageArea) => [
               coverageArea.name,
+              <span
+                key={`${coverageArea.id}-status`}
+                className={`rounded-full px-3 py-1 text-xs font-bold ${
+                  coverageArea.active === false
+                    ? "bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300"
+                    : "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                }`}
+              >
+                {coverageArea.active === false ? "Disabled" : "Active"}
+              </span>,
               <div key={`${coverageArea.id}-actions`} className="flex gap-2">
                 <button
                   className="rounded-xl border border-kabisig-border px-3 py-2 text-xs font-bold text-kabisig-text"
@@ -271,6 +372,13 @@ export default function CategoriesPage() {
                   }}
                 >
                   Edit
+                </button>
+                <button
+                  className="rounded-xl border border-kabisig-border px-3 py-2 text-xs font-bold text-kabisig-text"
+                  disabled={togglingCoverageId === coverageArea.id}
+                  onClick={() => void handleToggleCoverageArea(coverageArea.id, coverageArea.active === false)}
+                >
+                  {togglingCoverageId === coverageArea.id ? "Saving..." : coverageArea.active === false ? "Enable" : "Disable"}
                 </button>
                 <button
                   className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300"

@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { providerService } from "@kabisig/shared";
+import { formatReadableDateTime, providerService } from "@kabisig/shared";
 import { Card, EmptyPanel, FilterBar, SearchInput, Select, StatusBadge, Topbar } from "../../../components/ui";
+import { logAdminAction } from "../../../lib/admin-actions";
 import { useAdminAuth } from "../../../lib/auth-context";
 import { loadMarketplaceSnapshot, subscribeMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
 
@@ -100,6 +101,14 @@ export default function ProviderApprovalsPage() {
           "Please update and resubmit the required documents."
         );
       }
+      await logAdminAction(
+        admin,
+        type === "approve" ? "provider_approved" : type === "reject" ? "provider_rejected" : "provider_revision_requested",
+        "providerProfiles",
+        userId,
+        `Provider application ${applicationId} was ${type === "approve" ? "approved" : type === "reject" ? "rejected" : "sent for revision"}.`,
+        { applicationId }
+      );
       await reload();
     } finally {
       setActionState(null);
@@ -115,6 +124,14 @@ export default function ProviderApprovalsPage() {
         admin.id,
         status,
         status === "active" ? "Provider restored by admin." : `Provider marked as ${status}.`
+      );
+      await logAdminAction(
+        admin,
+        status === "active" ? "provider_unsuspended" : status === "suspended" ? "provider_suspended" : "provider_banned",
+        "providerProfiles",
+        userId,
+        status === "active" ? "Provider restored by admin." : `Provider marked as ${status}.`,
+        { moderationStatus: status }
       );
       await reload();
     } finally {
@@ -258,7 +275,7 @@ export default function ProviderApprovalsPage() {
             {auditLogs.length ? auditLogs.map((entry) => (
               <div key={entry.logId} className="rounded-[24px] border border-kabisig-border bg-slate-50 p-4 dark:bg-white/5">
                 <p className="text-sm font-bold text-kabisig-text">{entry.summary}</p>
-                <p className="mt-1 text-xs text-kabisig-muted">{entry.action} • {entry.createdAt}</p>
+                <p className="mt-1 text-xs text-kabisig-muted">{entry.action} • {formatReadableDateTime(entry.createdAt)}</p>
                 <p className="mt-2 text-xs text-kabisig-muted">Target: {entry.targetId}</p>
               </div>
             )) : <EmptyPanel title="No audit events yet" description="Moderation and approval events will be logged here." />}

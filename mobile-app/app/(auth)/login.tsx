@@ -1,28 +1,33 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
-import { BrandBlock, FeedbackBanner, FormInput, FullScreenPopup, PrimaryButton, Screen, SurfaceCard } from "../../src/components";
+import { KABISIG_TERMS_VERSION, userService, type User } from "@kabisig/shared";
+import { BrandBlock, FeedbackBanner, FormInput, FullScreenPopup, LaunchScreen, PrimaryButton, Screen, SurfaceCard } from "../../src/components";
+import { TermsAgreementModal } from "../../src/components/TermsAgreement";
 import { useAuth } from "../../src/hooks/AuthProvider";
 import { useGoogleAuth } from "../../src/hooks/useGoogleAuth";
 import { theme } from "../../src/theme";
 
-function GoogleButton({ onPress }: { onPress: () => void }) {
+type LoginUser = User & { onboardingCompleted?: boolean; approvalStatus?: string };
+
+function GoogleButton({ disabled, onPress }: { disabled?: boolean; onPress: () => void }) {
   return (
     <Pressable
+      disabled={disabled}
       onPress={onPress}
       style={{
         borderRadius: 20,
         paddingVertical: 15,
         paddingHorizontal: 18,
-        backgroundColor: "#FFFFFF",
+        backgroundColor: theme.dark ? theme.colors.surfaceAlt : "#FFFFFF",
         borderWidth: 1,
-        borderColor: "#DCE8F8",
+        borderColor: theme.dark ? theme.colors.border : "#DCE8F8",
         flexDirection: "row",
         justifyContent: "center",
         alignItems: "center",
-        gap: 12
+        gap: 12,
+        opacity: disabled ? 0.62 : 1
       }}
     >
       <View
@@ -30,133 +35,127 @@ function GoogleButton({ onPress }: { onPress: () => void }) {
           width: 28,
           height: 28,
           borderRadius: 14,
-          backgroundColor: "#F8FAFC",
+          backgroundColor: theme.dark ? theme.colors.card : "#F8FAFC",
           alignItems: "center",
           justifyContent: "center",
           borderWidth: 1,
-          borderColor: "#E2E8F0"
+          borderColor: theme.dark ? theme.colors.border : "#E2E8F0"
         }}
       >
         <Text style={{ fontWeight: "900", color: "#DB4437", fontSize: 15 }}>G</Text>
       </View>
-      <Text style={{ color: "#0F172A", fontWeight: "900", fontSize: 15 }}>Continue with Google</Text>
+      <Text style={{ color: theme.colors.text, fontWeight: "900", fontSize: 15 }}>{disabled ? "Google sign-in..." : "Continue with Google"}</Text>
     </Pressable>
-  );
-}
-
-function TermsOverlay({
-  visible,
-  onAgree,
-  onClose,
-  mode
-}: {
-  visible: boolean;
-  onAgree: () => void;
-  onClose: () => void;
-  mode: "login" | "google";
-}) {
-  if (!visible) return null;
-
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: "rgba(15,23,42,0.48)", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <SurfaceCard style={{ width: "100%", maxWidth: 380, gap: 16 }}>
-          <View style={{ width: 54, height: 54, borderRadius: 18, backgroundColor: "#E7F2FF", alignItems: "center", justifyContent: "center" }}>
-            <Ionicons name="document-text-outline" size={24} color="#0F6FDB" />
-          </View>
-          <View style={{ gap: 8 }}>
-            <Text style={{ color: theme.colors.text, fontSize: 20, fontWeight: "900" }}>Terms and agreement</Text>
-            <Text style={{ color: theme.colors.textMuted, lineHeight: 21 }}>
-              Before {mode === "google" ? "continuing with Google" : "signing in"}, please agree that Kabisig may store your account,
-              booking, notification, and communication data to operate the platform properly.
-            </Text>
-          </View>
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <Pressable onPress={onClose} style={{ flex: 1, borderRadius: 18, paddingVertical: 14, alignItems: "center", backgroundColor: theme.colors.surfaceAlt }}>
-              <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Cancel</Text>
-            </Pressable>
-            <Pressable onPress={onAgree} style={{ flex: 1, borderRadius: 18, paddingVertical: 14, alignItems: "center", backgroundColor: theme.colors.primary }}>
-              <Text style={{ color: "#fff", fontWeight: "800" }}>Agree</Text>
-            </Pressable>
-          </View>
-        </SurfaceCard>
-      </View>
-    </Modal>
   );
 }
 
 export default function LoginScreen() {
   const params = useLocalSearchParams<{ role?: string }>();
-  const { selectedRole, setSelectedRole, signIn, error } = useAuth();
+  const { selectedRole, setSelectedRole, signIn, signOut, error, refreshUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error" | "info"; title: string; message: string } | null>(null);
-  const [termsMode, setTermsMode] = useState<"login" | "google" | null>(null);
   const [popupError, setPopupError] = useState<string | null>(null);
+  const [pendingTermsUser, setPendingTermsUser] = useState<LoginUser | null>(null);
+  const [redirectToRegisterAfterPopup, setRedirectToRegisterAfterPopup] = useState(false);
 
   useEffect(() => {
     if (params.role === "provider" || params.role === "customer") {
       setSelectedRole(params.role);
     }
+    setFeedback(null);
+    setPopupError(null);
   }, [params.role, setSelectedRole]);
 
   useEffect(() => {
-    if (error) {
+    if (error && loading) {
       setPopupError(error);
       setFeedback({ type: "error", title: "Login failed", message: error });
     }
-  }, [error]);
+  }, [error, loading]);
 
   const role = ((params.role === "provider" || selectedRole === "provider") ? "provider" : "customer") as "customer" | "provider";
   const roleCopy = useMemo(
     () =>
       role === "provider"
-        ? { title: "Provider sign in", subtitle: "Manage jobs, schedules, earnings, and approvals in one place." }
+        ? { title: "Skilled Worker Access", subtitle: "Sign in to manage jobs, schedules, earnings, and approvals in one place." }
         : { title: "Customer sign in", subtitle: "Book trusted local help and keep your services organized." },
     [role]
   );
 
-  const { startGoogleSignIn, googleReady, busy: googleBusy } = useGoogleAuth({
+  const { startGoogleSignIn, cancelGoogleSignIn, googleReady, busy: googleBusy } = useGoogleAuth({
     role,
     intent: "login",
-    onSuccess: () => {
-      setTermsMode(null);
-      router.replace("/" as never);
+    onSuccess: (signedInUser) => {
+      if (!signedInUser.termsAcceptedAt) {
+        setPendingTermsUser(signedInUser);
+        return;
+      }
+      routeAfterLogin(signedInUser);
     },
     onError: (message) => {
-      setTermsMode(null);
+      const shouldRedirectToRegister = message.toLowerCase().includes("use create account first");
+      setRedirectToRegisterAfterPopup(shouldRedirectToRegister);
       setFeedback({ type: "error", title: "Google sign-in failed", message });
       setPopupError(message);
     }
   });
+
+  function routeAfterLogin(signedInUser: LoginUser) {
+    const nextRoute =
+      signedInUser.role === "provider"
+        ? !signedInUser.onboardingCompleted
+          ? "/provider/onboarding"
+          : signedInUser.approvalStatus !== "Approved"
+            ? "/provider/pending"
+            : "/(tabs)/home"
+        : "/(tabs)/home";
+    router.replace(nextRoute as never);
+  }
+
+  async function acceptLoginTerms() {
+    if (!pendingTermsUser) return;
+    await userService.updateUserDocument(pendingTermsUser.id, {
+      termsAcceptedAt: new Date().toISOString(),
+      termsVersion: KABISIG_TERMS_VERSION
+    });
+    await refreshUser();
+    const acceptedUser = {
+      ...pendingTermsUser,
+      termsAcceptedAt: new Date().toISOString(),
+      termsVersion: KABISIG_TERMS_VERSION
+    };
+    setPendingTermsUser(null);
+    routeAfterLogin(acceptedUser);
+  }
 
   async function continueLogin() {
     try {
       setLoading(true);
       setFeedback({ type: "info", title: "Signing you in", message: "Preparing your Kabisig workspace..." });
       const signedInUser = await signIn({ email, password, role });
-      const nextRoute =
-        signedInUser.role === "provider"
-          ? !signedInUser.onboardingCompleted
-            ? "/provider/onboarding"
-            : signedInUser.approvalStatus !== "Approved"
-              ? "/provider/pending"
-              : "/(tabs)/home"
-          : "/(tabs)/home";
-      router.replace(nextRoute as never);
+      if (!signedInUser.termsAcceptedAt) {
+        setPendingTermsUser(signedInUser);
+        return;
+      }
+      routeAfterLogin(signedInUser);
     } catch (loginError) {
       const nextMessage = loginError instanceof Error ? loginError.message : "We could not sign you in right now.";
+      setRedirectToRegisterAfterPopup(false);
       setFeedback({ type: "error", title: "Login failed", message: nextMessage });
       setPopupError(nextMessage);
     } finally {
       setLoading(false);
-      setTermsMode(null);
     }
   }
 
+  if (loading) {
+    return <LaunchScreen />;
+  }
+
   return (
-    <Screen style={{ backgroundColor: "#EAF4FF", paddingHorizontal: 0, paddingTop: 0 }}>
+    <Screen style={{ backgroundColor: theme.colors.background, paddingHorizontal: 0, paddingTop: 0 }}>
       <LinearGradient
         colors={["#071A34", "#0B2E5E", "#1287DB"]}
         start={{ x: 0, y: 0 }}
@@ -173,20 +172,41 @@ export default function LoginScreen() {
       </LinearGradient>
 
       <View style={{ paddingHorizontal: 20, marginTop: -84, gap: 14 }}>
-        <SurfaceCard style={{ gap: 14 }}>
+          <SurfaceCard style={{ gap: 14 }}>
           {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
-          {error && !feedback ? <FeedbackBanner type="error" title="Login failed" message={error} /> : null}
           <FormInput label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" placeholder={`${role}@kabisig.app`} />
           <FormInput label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="Enter your password" />
-          <PrimaryButton label={loading ? "Signing in..." : "Sign in"} onPress={() => setTermsMode("login")} disabled={loading} />
-          <GoogleButton onPress={() => setTermsMode("google")} />
-          {googleBusy ? <FeedbackBanner type="info" title="Google sign-in in progress" message="Finishing your Google authentication session..." /> : null}
+          <PrimaryButton
+            label={loading ? "Signing in..." : "Sign in"}
+            onPress={() => {
+              setPopupError(null);
+              setFeedback(null);
+              void continueLogin();
+            }}
+            disabled={loading}
+          />
+          {role === "customer" ? (
+            <>
+              <GoogleButton
+                disabled={googleBusy}
+                onPress={() => {
+                  if (googleBusy) return;
+                  if (!googleReady) {
+                    setFeedback({ type: "info", title: "Preparing Google sign-in", message: "The Google auth request is still loading. Try again in a moment." });
+                    return;
+                  }
+                  void startGoogleSignIn();
+                }}
+              />
+              {googleBusy ? <FeedbackBanner type="info" title="Google sign-in in progress" message="Finishing your Google authentication session..." /> : null}
+            </>
+          ) : null}
           <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
             <Pressable onPress={() => router.push("/(auth)/forgot-password")}>
-              <Text style={{ color: "#0F6FDB", fontWeight: "800" }}>Forgot password?</Text>
+              <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>Forgot password?</Text>
             </Pressable>
             <Pressable onPress={() => router.push({ pathname: "/(auth)/register", params: { role } })}>
-              <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>Create account</Text>
+              <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>{role === "provider" ? "Apply Now" : "Create account"}</Text>
             </Pressable>
           </View>
           <Pressable onPress={() => router.push("/(auth)/role-selection")}>
@@ -201,29 +221,28 @@ export default function LoginScreen() {
         icon="alert-circle"
         title="Sign-in error"
         message={popupError || ""}
-        dismissLabel="Try again"
+        dismissLabel={redirectToRegisterAfterPopup ? "Create account" : "Try again"}
         onDismiss={() => {
+          cancelGoogleSignIn();
           setPopupError(null);
-          setTermsMode(null);
+          setFeedback(null);
+          if (redirectToRegisterAfterPopup) {
+            setRedirectToRegisterAfterPopup(false);
+            router.replace({ pathname: "/(auth)/register", params: { role } });
+          }
         }}
       />
 
-      <TermsOverlay
-        visible={termsMode !== null}
-        mode={termsMode ?? "login"}
-        onClose={() => setTermsMode(null)}
-        onAgree={() => {
-          if (termsMode === "google") {
-            if (!googleReady) {
-              setFeedback({ type: "info", title: "Preparing Google sign-in", message: "The Google auth request is still loading. Tap Continue with Google again in a moment." });
-              setTermsMode(null);
-              return;
-            }
-            void startGoogleSignIn();
-          } else {
-            void continueLogin();
-          }
+      <TermsAgreementModal
+        visible={!!pendingTermsUser}
+        title="Terms required before continuing"
+        subtitle="This account has not accepted the latest Kabisig Terms and Agreement yet. Read the full agreement and confirm to continue."
+        agreeLabel="Accept and sign in"
+        onClose={() => {
+          setPendingTermsUser(null);
+          void signOut();
         }}
+        onAgree={() => void acceptLoginTerms()}
       />
     </Screen>
   );

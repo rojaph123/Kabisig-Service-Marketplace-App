@@ -4,15 +4,17 @@ import {
   adminAuditService,
   bookingService,
   bookingConflictService,
-  categoryService,
+  bookingChangeRequestService,
   complaintService,
   getFirestore_,
+  marketplaceConfigService,
   paymentService,
   providerService,
   userService,
   type AnalyticsSummary,
   type AdminAuditLog,
   type Booking,
+  type BookingChangeRequest,
   type BookingConflictHistory,
   type ComplaintReport,
   type Payment,
@@ -21,7 +23,7 @@ import {
   type ServiceCategory,
   type User,
 } from "@kabisig/shared";
-import { collection, doc, getDoc, onSnapshot } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, onSnapshot } from "firebase/firestore";
 
 export interface MarketplaceSnapshot {
   users: User[];
@@ -29,6 +31,7 @@ export interface MarketplaceSnapshot {
   pendingApplications: ProviderApplication[];
   bookings: Booking[];
   bookingConflicts: BookingConflictHistory[];
+  bookingChangeRequests: BookingChangeRequest[];
   payments: Payment[];
   categories: ServiceCategory[];
   complaints: ComplaintReport[];
@@ -185,6 +188,18 @@ function emptyAnalyticsSummary(): AnalyticsSummary {
   };
 }
 
+export async function loadConfiguredCategories(): Promise<ServiceCategory[]> {
+  await marketplaceConfigService.ensureDefaultMarketplaceData();
+  const snapshot = await getDocs(collection(getFirestore_(), "serviceCategories"));
+  return snapshot.docs.map((entry) => entry.data() as ServiceCategory);
+}
+
+export async function loadConfiguredCoverageAreas() {
+  await marketplaceConfigService.ensureDefaultMarketplaceData();
+  const snapshot = await getDocs(collection(getFirestore_(), "coverageAreas"));
+  return snapshot.docs.map((entry) => entry.data() as { id: string; name: string; active: boolean });
+}
+
 export async function loadMarketplaceAnalyticsSummary(): Promise<AnalyticsSummary> {
   const summary = await getDoc(doc(getFirestore_(), "analytics", "marketplace"));
   if (summary.exists()) {
@@ -210,15 +225,17 @@ export function subscribeMarketplaceAnalyticsSummary(
 }
 
 export async function loadMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
-  const [users, providerProfiles, pendingApplications, bookings, bookingConflicts, payments, categories, complaints, auditLogs] =
+  await marketplaceConfigService.ensureDefaultMarketplaceData();
+  const [users, providerProfiles, pendingApplications, bookings, bookingConflicts, bookingChangeRequests, payments, categories, complaints, auditLogs] =
     await Promise.all([
       userService.getAllUsers(),
       providerService.getAllProviderProfiles(),
       providerService.getPendingApplications(),
       bookingService.getAllBookings(),
       bookingConflictService.getProviderConflictHistory(""),
+      bookingChangeRequestService.getAllRequests(),
       paymentService.getAllPayments(),
-      categoryService.getAllCategories(),
+      loadConfiguredCategories(),
       complaintService.getAllComplaints(),
       adminAuditService.getAllAuditLogs(),
     ]);
@@ -229,6 +246,7 @@ export async function loadMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
     pendingApplications,
     bookings,
     bookingConflicts,
+    bookingChangeRequests,
     payments,
     categories,
     complaints,
@@ -248,12 +266,14 @@ export function subscribeMarketplaceSnapshot(
   callback: (snapshot: MarketplaceSnapshot) => void
 ): () => void {
   const db = getFirestore_();
+  void marketplaceConfigService.ensureDefaultMarketplaceData();
   let state: Omit<MarketplaceSnapshot, "analytics"> = {
     users: [],
     providerProfiles: [],
     pendingApplications: [],
     bookings: [],
     bookingConflicts: [],
+    bookingChangeRequests: [],
     payments: [],
     categories: [],
     complaints: [],
@@ -305,12 +325,19 @@ export function subscribeMarketplaceSnapshot(
       };
       emit();
     }),
+    onSnapshot(collection(db, "bookingChangeRequests"), (snapshot) => {
+      state = {
+        ...state,
+        bookingChangeRequests: snapshot.docs.map((entry) => entry.data() as BookingChangeRequest),
+      };
+      emit();
+    }),
     onSnapshot(collection(db, "payments"), (snapshot) => {
       state = { ...state, payments: snapshot.docs.map((entry) => entry.data() as Payment) };
       emit();
     }),
     onSnapshot(collection(db, "serviceCategories"), () => {
-      void categoryService.getAllCategories().then((categories) => {
+      void loadConfiguredCategories().then((categories) => {
         state = { ...state, categories };
         emit();
       });

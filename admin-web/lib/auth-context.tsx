@@ -3,7 +3,7 @@
 import { createContext, PropsWithChildren, useContext, useMemo, useState, useEffect } from "react";
 import { authService } from "@kabisig/shared";
 import { getFirebaseAuth } from "./firebase";
-import { onAuthStateChanged } from "firebase/auth";
+import { browserLocalPersistence, onAuthStateChanged, setPersistence } from "firebase/auth";
 
 function formatAuthError(error: unknown) {
   if (!(error instanceof Error)) {
@@ -47,38 +47,59 @@ export function AdminAuthProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  async function loadAdminUser(uid: string) {
+    const userDoc = await authService.getUserDocument(uid);
+    if (!userDoc || userDoc.role !== "admin") {
+      return null;
+    }
+
+    return {
+      id: uid,
+      email: userDoc.email,
+      fullName: userDoc.fullName,
+      role: "admin" as const,
+    };
+  }
+
   // Listen to Firebase auth state changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
-      try {
-        if (firebaseUser) {
-          // Get user document from Firestore
-          const userDoc = await authService.getUserDocument(firebaseUser.uid);
-          if (userDoc && userDoc.role === "admin") {
-            setAdmin({
-              id: firebaseUser.uid,
-              email: userDoc.email,
-              fullName: userDoc.fullName,
-              role: "admin",
-            });
-            setError(null);
-          } else {
-            // User is authenticated but not an admin
-            setAdmin(null);
-            setError("User is not an admin");
-          }
-        } else {
-          setAdmin(null);
-        }
-      } catch (err) {
-        console.error("Admin auth state error:", err);
-        setError(formatAuthError(err));
-      } finally {
-        setLoading(false);
-      }
-    });
+    let unsubscribe: (() => void) | undefined;
+    let mounted = true;
+    const auth = getFirebaseAuth();
 
-    return () => unsubscribe();
+    void setPersistence(auth, browserLocalPersistence)
+      .catch((err) => {
+        console.warn("Admin auth persistence setup failed:", err);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+          try {
+            if (firebaseUser) {
+              const adminUser = await loadAdminUser(firebaseUser.uid);
+              if (adminUser) {
+                setAdmin(adminUser);
+                setError(null);
+              } else {
+                setAdmin(null);
+                setError("User is not an admin");
+              }
+            } else {
+              setAdmin(null);
+            }
+          } catch (err) {
+            console.error("Admin auth state error:", err);
+            setError(formatAuthError(err));
+          } finally {
+            setLoading(false);
+          }
+        });
+      });
+
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
   }, []);
 
   const value = useMemo<AdminAuthValue>(
@@ -90,20 +111,16 @@ export function AdminAuthProvider({ children }: PropsWithChildren) {
         try {
           setError(null);
           setLoading(true);
+          await setPersistence(getFirebaseAuth(), browserLocalPersistence);
           const firebaseUser = await authService.loginWithEmail(email, password);
-          const userDoc = await authService.getUserDocument(firebaseUser.uid);
+          const adminUser = await loadAdminUser(firebaseUser.uid);
 
-          if (!userDoc || userDoc.role !== "admin") {
+          if (!adminUser) {
             await authService.signOut();
             throw new Error("User is not an admin");
           }
 
-          setAdmin({
-            id: firebaseUser.uid,
-            email: userDoc.email,
-            fullName: userDoc.fullName,
-            role: "admin",
-          });
+          setAdmin(adminUser);
         } catch (err) {
           const errorMsg = formatAuthError(err);
           setError(errorMsg);

@@ -19,16 +19,14 @@ export default function CategoryScreen() {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return categories;
 
-    return categories.filter((category) =>
-      [category.name, category.description].join(" ").toLowerCase().includes(normalized)
-    );
+    return categories.filter((category) => (category.name || category.id).toLowerCase().includes(normalized));
   }, [categories, query]);
 
   return (
     <FixedScreen style={{ backgroundColor: theme.colors.background }} header={<BackHeader title="Service Categories" onBack={() => router.back()} />}>
       <SearchBar placeholder="Search category..." value={query} onChangeText={setQuery} />
 
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 14 }}>
+      <View style={{ gap: 12 }}>
         {filteredCategories.map((category) => {
           const visual = getServiceVisual(category.name, category.icon);
           return (
@@ -36,19 +34,21 @@ export default function CategoryScreen() {
               key={category.id}
               onPress={() =>
                 router.push({
-                  pathname: "/booking-request",
-                  params: { categoryId: category.id },
+                  pathname: "/providers",
+                  params: { categoryId: category.id, categoryName: category.name }
                 })
               }
               style={{
-                width: "47%",
-                borderRadius: 24,
-                padding: 18,
+                width: "100%",
+                borderRadius: 18,
+                padding: 16,
                 backgroundColor: theme.colors.card,
                 borderWidth: 1,
                 borderColor: theme.colors.border,
-                gap: 12,
-                ...theme.shadow,
+                gap: 14,
+                flexDirection: "row",
+                alignItems: "center",
+                ...theme.shadow
               }}
             >
               <View
@@ -63,15 +63,18 @@ export default function CategoryScreen() {
               >
                 <Ionicons name={visual.icon} size={24} color={visual.tint} />
               </View>
-              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 16 }}>
-                {category.name}
-              </Text>
-              <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
-                {category.description || "Description coming soon."}
-              </Text>
-              <Text style={{ color: theme.colors.primary, fontWeight: "700" }}>
-                From PHP {category.startingPrice.toLocaleString()}
-              </Text>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 16 }} numberOfLines={1}>
+                  {category.name}
+                </Text>
+                <Text style={{ color: theme.colors.textMuted, lineHeight: 19, marginTop: 3 }} numberOfLines={2}>
+                  {category.description || "Description coming soon."}
+                </Text>
+                <Text style={{ color: theme.colors.primary, fontWeight: "700", marginTop: 6 }}>
+                  From ₱{category.startingPrice.toLocaleString()}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.colors.textLight} />
             </Pressable>
           );
         })}

@@ -15,7 +15,7 @@ const progressByStatus = {
 } as const;
 
 export default function PendingApprovalScreen() {
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, signOut } = useAuth();
   const [status, setStatus] = useState<ProviderApprovalStatus>((user?.approvalStatus as ProviderApprovalStatus) || "Pending Approval");
   const [refreshing, setRefreshing] = useState(false);
   const [reviewNotes, setReviewNotes] = useState("");
@@ -24,6 +24,14 @@ export default function PendingApprovalScreen() {
   useEffect(() => {
     setStatus((user?.approvalStatus as ProviderApprovalStatus) || "Pending Approval");
   }, [user?.approvalStatus]);
+
+  useEffect(() => {
+    if (status !== "Rejected") return;
+
+    void signOut().finally(() => {
+      router.replace("/(auth)/role-selection");
+    });
+  }, [signOut, status]);
 
   async function refreshStatus() {
     if (!user?.id) return;
@@ -35,6 +43,9 @@ export default function PendingApprovalScreen() {
       ]);
       if (profile?.approvalStatus) {
         setStatus(profile.approvalStatus);
+      }
+      if (profile?.approvalStatus === "Rejected") {
+        return;
       }
       setReviewNotes(latestApplication?.reviewNotes || "");
       await refreshUser();

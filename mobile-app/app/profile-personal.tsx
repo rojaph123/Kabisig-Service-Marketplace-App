@@ -6,26 +6,8 @@ import { BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, Im
 import { useAuth } from "../src/hooks/AuthProvider";
 import { requestCurrentLocation } from "../src/services/location";
 import { theme } from "../src/theme";
-
-function mapsUrl(address: string) {
-  const coords = address.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
-  if (coords) {
-    const latitude = Number(coords[1]);
-    const longitude = Number(coords[2]);
-    const delta = 0.008;
-    const bbox = [longitude - delta, latitude - delta, longitude + delta, latitude + delta].join("%2C");
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${latitude}%2C${longitude}`;
-  }
-  return `https://www.openstreetmap.org/export/embed.html?search=${encodeURIComponent(address)}`;
-}
-
-function mapsExternalUrl(address: string) {
-  const coords = address.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
-  if (coords) {
-    return `https://www.openstreetmap.org/?mlat=${coords[1]}&mlon=${coords[2]}#map=17/${coords[1]}/${coords[2]}`;
-  }
-  return `https://www.openstreetmap.org/search?query=${encodeURIComponent(address)}`;
-}
+import { readableAppError } from "../src/utils/errors";
+import { googleMapsEmbedUrl, googleMapsExternalUrl } from "../src/utils/maps";
 
 export default function ProfilePersonalScreen() {
   const { user, refreshUser } = useAuth();
@@ -33,13 +15,16 @@ export default function ProfilePersonalScreen() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; title: string; message: string } | null>(null);
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
+  const [locating, setLocating] = useState(false);
   const [showMapPreview, setShowMapPreview] = useState(false);
+  const [fullName, setFullName] = useState(user?.fullName || "");
   const [addressesText, setAddressesText] = useState("");
   const [form, setForm] = useState<CustomerProfile>({
     userId: "",
     phone: "",
     addresses: [],
     defaultLocation: "",
+    pinpointLocation: "",
     profilePhotoUrl: "",
     notificationPreferences: { push: true, email: true, sms: false }
   });
@@ -47,9 +32,16 @@ export default function ProfilePersonalScreen() {
   useEffect(() => {
     async function load() {
       if (!user) return;
+      setFullName(user.fullName || "");
       const profile = await userService.getCustomerProfile(user.id);
       if (profile) {
-        setForm(profile);
+        const defaultLooksLikePin = Boolean(profile.defaultLocation?.trim().match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/));
+        const readableAddress = profile.addresses.find((address) => !address.trim().match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/));
+        setForm({
+          ...profile,
+          defaultLocation: defaultLooksLikePin ? readableAddress || "" : profile.defaultLocation,
+          pinpointLocation: profile.pinpointLocation || (defaultLooksLikePin ? profile.defaultLocation : "")
+        });
         setAddressesText(profile.addresses.join("\n"));
       } else {
         setForm((current) => ({ ...current, userId: user.id }));
@@ -68,23 +60,31 @@ export default function ProfilePersonalScreen() {
       .map((item) => item.trim())
       .filter(Boolean);
 
-    if (!form.phone.trim() || !form.defaultLocation.trim() || !normalizedAddresses.length) {
+    if (!fullName.trim() || !form.phone.trim() || !form.defaultLocation.trim()) {
       setFeedback({
         type: "error",
         title: "Missing details",
-        message: "Phone number, location, and at least one saved address are required."
+        message: "Name, phone number, and complete address are required."
       });
       return;
     }
+    const completeAddress = form.defaultLocation.trim();
+    const savedAddresses = [
+      completeAddress,
+      ...normalizedAddresses.filter((address) => address.toLowerCase() !== completeAddress.toLowerCase())
+    ];
 
     setSaving(true);
     try {
       await userService.updateCustomerProfile(user.id, {
         ...form,
         userId: user.id,
-        addresses: normalizedAddresses
+        defaultLocation: completeAddress,
+        pinpointLocation: form.pinpointLocation?.trim() || "",
+        addresses: savedAddresses
       });
       await userService.updateUserDocument(user.id, {
+        fullName: fullName.trim(),
         profilePhoto: form.profilePhotoUrl || ""
       });
       await refreshUser();
@@ -94,13 +94,16 @@ export default function ProfilePersonalScreen() {
         message: "Your customer details were saved successfully."
       });
       setShowSuccessOverlay(true);
-      setTimeout(() => setShowSuccessOverlay(false), 1000);
+      setTimeout(() => {
+        setShowSuccessOverlay(false);
+        router.replace("/(tabs)/profile");
+      }, 1000);
     } catch (error) {
       console.error(error);
       setFeedback({
         type: "error",
         title: "Save failed",
-        message: "We could not save your details right now."
+        message: readableAppError(error, "We could not save your details right now.")
       });
     } finally {
       setSaving(false);
@@ -108,20 +111,32 @@ export default function ProfilePersonalScreen() {
   }
 
   async function handleUseGps() {
-    const location = await requestCurrentLocation();
-    if (!location.granted) {
+    setLocating(true);
+    try {
+      const location = await requestCurrentLocation();
+      if (!location.granted) {
+        setFeedback({
+          type: "error",
+          title: "Location permission needed",
+          message: "Please allow location access only if you want Kabisig to save an exact navigation pin. Your complete address remains the main address."
+        });
+        return;
+      }
+
+      setForm((current) => ({
+        ...current,
+        pinpointLocation: location.label
+      }));
+    } catch (error) {
+      console.warn("Unable to capture GPS location:", error);
       setFeedback({
         type: "error",
-        title: "Location permission needed",
-        message: "Please allow location access so we can capture your current pin."
+        title: "Location unavailable",
+        message: readableAppError(error, "We could not get your current location right now. Please try again or type your complete address.")
       });
-      return;
+    } finally {
+      setLocating(false);
     }
-
-    setForm((current) => ({
-      ...current,
-      defaultLocation: location.label
-    }));
   }
 
   if (loading) {
@@ -139,29 +154,63 @@ export default function ProfilePersonalScreen() {
           <BackHeader title="Personal Details" onBack={() => router.back()} />
           {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
           <FullScreenPopup visible={showSuccessOverlay} title="Details updated" message="Your profile information was saved successfully." />
+          <FullScreenPopup
+            visible={locating}
+            title="Finding your location"
+            message="Please wait while we request permission and capture your current GPS pin."
+            icon="navigate-circle"
+            tone="info"
+          />
           <MapPreviewModal
             visible={showMapPreview}
-            title="Saved location preview"
-            subtitle={form.defaultLocation}
-            mapUrl={mapsUrl(form.defaultLocation)}
+            title="Pinpoint location preview"
+            subtitle={form.pinpointLocation || form.defaultLocation}
+            mapUrl={googleMapsEmbedUrl(form.pinpointLocation || form.defaultLocation)}
             onClose={() => setShowMapPreview(false)}
-            onOpenExternal={() => void Linking.openURL(mapsExternalUrl(form.defaultLocation))}
+            onOpenExternal={() => void Linking.openURL(googleMapsExternalUrl(form.pinpointLocation || form.defaultLocation))}
           />
         </>
       }
       footer={<PrimaryButton label={saving ? "Saving..." : "Save details"} onPress={() => void handleSave()} disabled={saving} />}
     >
       <ImageUploadField label="Profile photo" value={form.profilePhotoUrl} onChange={(value) => setForm((current) => ({ ...current, profilePhotoUrl: value }))} />
+      <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt }}>
+        <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Why permissions are requested</Text>
+        <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
+          Location is used only when you tap Use GPS, camera/gallery access is used only when you upload photos, and notifications help show booking, payment, chat, and account updates.
+        </Text>
+      </SurfaceCard>
+      <FormInput label="Full name" value={fullName} onChangeText={setFullName} />
       <FormInput label="Phone number" value={form.phone} onChangeText={(value) => setForm((current) => ({ ...current, phone: value }))} />
       <SurfaceCard>
+        <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Complete address</Text>
+        <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
+          This is the main address shown to workers and used in your bookings. Enter house/unit, street, barangay, city, and province.
+        </Text>
+        <FormInput
+          label="Complete address"
+          value={form.defaultLocation}
+          onChangeText={(value) => setForm((current) => ({ ...current, defaultLocation: value }))}
+          placeholder="House/Unit, Street, Barangay, City, Province"
+        />
+      </SurfaceCard>
+
+      <SurfaceCard>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-          <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Pinpoint location</Text>
-          <Pressable onPress={() => void handleUseGps()}>
-            <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>Use GPS</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Pinpoint location</Text>
+            <Text style={{ color: theme.colors.textMuted, marginTop: 3 }}>Optional map pin for exact navigation.</Text>
+          </View>
+          <Pressable onPress={() => void handleUseGps()} disabled={locating}>
+            <Text style={{ color: theme.colors.primary, fontWeight: "800", opacity: locating ? 0.55 : 1 }}>
+              {locating ? "Locating..." : "Use GPS"}
+            </Text>
           </Pressable>
         </View>
-        <FormInput label="Location" value={form.defaultLocation} onChangeText={(value) => setForm((current) => ({ ...current, defaultLocation: value }))} />
-        {form.defaultLocation ? (
+        <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
+          The GPS pin helps the worker open the exact place in maps, but it does not replace your complete address.
+        </Text>
+        {form.pinpointLocation ? (
           <Pressable
             onPress={() => setShowMapPreview(true)}
             style={{
@@ -172,30 +221,22 @@ export default function ProfilePersonalScreen() {
               borderColor: theme.colors.border
             }}
           >
-            <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Preview saved location</Text>
+            <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Preview pinpoint location</Text>
             <Text style={{ color: theme.colors.textMuted, marginTop: 4 }} numberOfLines={2}>
-              {form.defaultLocation}
+              {form.pinpointLocation}
             </Text>
           </Pressable>
-        ) : null}
+        ) : (
+          <Text style={{ color: theme.colors.textMuted }}>No GPS pin added yet.</Text>
+        )}
       </SurfaceCard>
       <FormInput
-        label="Saved addresses"
+        label="Other complete addresses"
         value={addressesText}
         onChangeText={setAddressesText}
-        placeholder={"Enter one address per line\nExample:\nPurok 1, Malaybalay City\nApartment 2, Valencia City"}
+        placeholder={"Enter one complete address per line\nExample:\nPurok 1, Barangay 1, Malaybalay City, Bukidnon\nApartment 2, Street Name, Malaybalay City, Bukidnon"}
         style={{ minHeight: 120, textAlignVertical: "top" }}
         multiline
-      />
-      <FormInput
-        label="Notification preferences"
-        value={[
-          form.notificationPreferences.push ? "Push" : null,
-          form.notificationPreferences.email ? "Email" : null,
-          form.notificationPreferences.sms ? "SMS" : null
-        ].filter(Boolean).join(", ")}
-        editable={false}
-        style={{ color: theme.colors.textMuted }}
       />
     </FixedScreen>
   );

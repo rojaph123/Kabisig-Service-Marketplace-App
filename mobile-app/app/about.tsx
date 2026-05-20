@@ -14,7 +14,7 @@ const pillars = [
   {
     icon: "construct-outline",
     title: "Built for local services",
-    description: "Kabisig supports electricians, plumbers, welders, roofers, and construction workers with role-aware booking and job management."
+    description: "Kabisig supports electricians, plumbers, welders, roofers, carpenters, and tile setters with role-aware booking and job management."
   },
   {
     icon: "chatbubbles-outline",

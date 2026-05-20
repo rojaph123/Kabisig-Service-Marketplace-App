@@ -1,35 +1,90 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Image, Pressable, Text, View } from "react-native";
-import { bookingService, providerService, reviewService, type ProviderProfile, type Review } from "@kabisig/shared";
+import { Image, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { bookingService, categoryService, reviewService, userService, type ProviderProfile, type Review, type ServiceCategory } from "@kabisig/shared";
 import { BackHeader, EmptyState, FixedScreen, MediaPreviewModal, PrimaryButton, StatusBadge, SurfaceCard } from "../src/components";
+import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
+import { formatProviderStartingRate } from "../src/utils/rates";
+import { getProviderResponseTimeLabel } from "../src/utils/responseTime";
 
 type ProviderCard = ProviderProfile & { userId: string };
 
+function formatWorkingTime(value: string) {
+  const [hourText, minuteText] = value.split(":");
+  const hourNumber = Number(hourText);
+  const minuteNumber = Number(minuteText);
+  if (!Number.isFinite(hourNumber) || !Number.isFinite(minuteNumber)) return value;
+  const suffix = hourNumber >= 12 ? "PM" : "AM";
+  const normalizedHour = ((hourNumber + 11) % 12) + 1;
+  return `${normalizedHour}:${String(minuteNumber).padStart(2, "0")} ${suffix}`;
+}
+
 export default function ProviderDetailScreen() {
   const params = useLocalSearchParams<{ userId?: string }>();
+  const { user } = useAuth();
   const [provider, setProvider] = useState<ProviderCard | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [busyNow, setBusyNow] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showAllPortfolio, setShowAllPortfolio] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+
     async function load() {
-      if (!params.userId) return;
-      const providers = await providerService.getAllProviderProfiles();
-      const match = providers.find((item) => item.userId === params.userId) ?? null;
+      if (!params.userId || !user) return;
+      const [nextProvider, savedProviderIds, nextCategories] = await Promise.all([
+        userService.getProviderProfile(params.userId),
+        user?.role === "customer" ? userService.getSavedProviderIds(user.id) : Promise.resolve([]),
+        categoryService.getAllCategories()
+      ]);
+      if (!mounted) return;
+      const match = nextProvider ? { ...nextProvider, userId: params.userId } : null;
       setProvider(match);
+      setIsSaved(savedProviderIds.includes(params.userId));
+      setCategories(nextCategories);
 
       if (match) {
         const nextReviews = await reviewService.getProviderReviews(match.userId);
+        if (!mounted) return;
         setReviews(nextReviews);
       }
     }
 
-    void load();
-  }, [params.userId]);
+    void load().catch((error) => {
+      if (!mounted) return;
+      console.warn("Unable to load provider details:", error);
+      setProvider(null);
+      setReviews([]);
+      setIsSaved(false);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [params.userId, user]);
+
+  async function toggleSavedProvider() {
+    if (!user || user.role !== "customer" || !provider || saving) return;
+
+    setSaving(true);
+    try {
+      if (isSaved) {
+        await userService.unsaveProvider(user.id, provider.userId);
+        setIsSaved(false);
+      } else {
+        await userService.saveProvider(user.id, provider.userId);
+        setIsSaved(true);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!provider?.userId) return;
@@ -50,6 +105,11 @@ export default function ProviderDetailScreen() {
     () => [...reviews].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3),
     [reviews]
   );
+  const portfolio = useMemo(
+    () => [...(provider?.portfolio ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [provider?.portfolio]
+  );
+  const recentPortfolio = useMemo(() => portfolio.slice(0, 3), [portfolio]);
   const getReviewMedia = (review: Review) => (review as Review & { mediaUrls?: string[] }).mediaUrls ?? [];
 
   if (!provider) {
@@ -72,6 +132,56 @@ export default function ProviderDetailScreen() {
       header={<BackHeader title="Provider Details" onBack={() => router.back()} />}
     >
       <MediaPreviewModal visible={!!previewImage} uri={previewImage} title="Provider Media Preview" onClose={() => setPreviewImage(null)} />
+      <Modal visible={showAllPortfolio} transparent animationType="fade" onRequestClose={() => setShowAllPortfolio(false)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.66)", justifyContent: "center", padding: 18 }}>
+          <SurfaceCard style={{ maxHeight: "92%", gap: 14 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: theme.colors.text, fontSize: 21, fontWeight: "900" }}>All portfolio</Text>
+                <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
+                  {portfolio.length} completed work sample{portfolio.length === 1 ? "" : "s"}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => setShowAllPortfolio(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close portfolio"
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 21,
+                  backgroundColor: theme.colors.surfaceAlt,
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}
+              >
+                <Ionicons name="close" size={20} color={theme.colors.text} />
+              </Pressable>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingRight: 4 }}>
+              {portfolio.map((item) => (
+                <View key={item.portfolioItemId} style={{ borderRadius: 18, padding: 12, backgroundColor: theme.colors.surfaceAlt, gap: 10 }}>
+                  <View>
+                    <Text style={{ color: theme.colors.text, fontWeight: "900" }}>{item.title}</Text>
+                    {item.description ? <Text style={{ color: theme.colors.textMuted, marginTop: 4, lineHeight: 19 }}>{item.description}</Text> : null}
+                  </View>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    {[
+                      { label: "Before", uri: item.beforePhoto.url },
+                      { label: "After", uri: item.afterPhoto.url },
+                    ].map((photo) => (
+                      <Pressable key={`${item.portfolioItemId}-all-${photo.label}`} onPress={() => setPreviewImage(photo.uri)} style={{ flex: 1, gap: 6 }}>
+                        <Image source={{ uri: photo.uri }} style={{ width: "100%", aspectRatio: 1, borderRadius: 16, backgroundColor: theme.colors.card }} resizeMode="cover" />
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: "800", textAlign: "center" }}>{photo.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </SurfaceCard>
+        </View>
+      </Modal>
 
       <SurfaceCard
         style={{
@@ -79,7 +189,7 @@ export default function ProviderDetailScreen() {
           overflow: "hidden"
         }}
       >
-        <View style={{ backgroundColor: theme.colors.primaryDark, padding: 22, gap: 18 }}>
+        <View style={{ backgroundColor: theme.dark ? theme.colors.primaryLight : theme.colors.primaryDark, padding: 22, gap: 18 }}>
           <View style={{ flexDirection: "row", gap: 16, alignItems: "center" }}>
             {provider.profilePhotoUrl ? (
               <Image
@@ -103,13 +213,36 @@ export default function ProviderDetailScreen() {
             )}
 
             <View style={{ flex: 1, gap: 6 }}>
-              <Text style={{ fontSize: 24, fontWeight: "900", color: "#fff" }}>{provider.displayName}</Text>
+              <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+                <Text style={{ flex: 1, fontSize: 24, fontWeight: "900", color: "#fff" }}>{provider.displayName}</Text>
+                {user?.role === "customer" ? (
+                  <Pressable
+                    onPress={() => void toggleSavedProvider()}
+                    disabled={saving}
+                    accessibilityRole="button"
+                    accessibilityLabel={isSaved ? "Remove saved provider" : "Save provider"}
+                    style={{
+                      width: 42,
+                      height: 42,
+                      borderRadius: 21,
+                      backgroundColor: "rgba(255,255,255,0.14)",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: saving ? 0.7 : 1
+                    }}
+                  >
+                    <Ionicons name={isSaved ? "heart" : "heart-outline"} size={22} color={isSaved ? "#FF6B81" : "#fff"} />
+                  </Pressable>
+                ) : null}
+              </View>
               <Text style={{ color: "rgba(255,255,255,0.82)" }}>
                 {provider.businessName || "Independent service provider"}
               </Text>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                 <StatusBadge status={provider.isApproved ? "Verified" : provider.approvalStatus} />
                 <StatusBadge status={`${provider.rating ? provider.rating.toFixed(1) : "New"} rating`} />
+                <StatusBadge status={getProviderResponseTimeLabel(provider)} />
+                {isSaved ? <StatusBadge status="Saved" /> : null}
                 {busyNow ? <StatusBadge status="Busy Working" /> : null}
               </View>
             </View>
@@ -121,16 +254,18 @@ export default function ProviderDetailScreen() {
         </View>
 
         <View style={{ padding: 18, gap: 14 }}>
-          <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
             {[
               { label: "Experience", value: `${provider.yearsExperience} yrs` },
-              { label: "Rate", value: `PHP ${(provider.hourlyRate || 0).toLocaleString()}/hr` },
+              { label: "Starting rate", value: formatProviderStartingRate(provider, categories) },
+              { label: "Reply", value: getProviderResponseTimeLabel(provider) },
               { label: "City", value: provider.city || "TBD" }
             ].map((item) => (
               <View
                 key={item.label}
                 style={{
-                  flex: 1,
+                  width: "48%",
+                  flexGrow: 1,
                   borderRadius: 18,
                   padding: 14,
                   backgroundColor: theme.colors.surfaceAlt
@@ -153,8 +288,12 @@ export default function ProviderDetailScreen() {
                 label: provider.serviceAreas.length ? provider.serviceAreas.join(", ") : "Service areas not listed yet"
               },
               {
-                icon: "call-outline",
-                label: provider.phone || "Contact details available after booking"
+                icon: "chatbubble-ellipses-outline",
+                label: "Message the worker"
+              },
+              {
+                icon: "chatbubble-ellipses-outline",
+                label: getProviderResponseTimeLabel(provider)
               },
               {
                 icon: "gift-outline",
@@ -197,6 +336,57 @@ export default function ProviderDetailScreen() {
       </SurfaceCard>
 
       <SurfaceCard>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 18, fontWeight: "900", color: theme.colors.text }}>Recent portfolio</Text>
+            <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
+              3 latest completed jobs.
+            </Text>
+          </View>
+          {portfolio.length > 3 ? (
+            <Pressable
+              onPress={() => setShowAllPortfolio(true)}
+              style={{
+                borderRadius: 14,
+                paddingVertical: 8,
+                paddingHorizontal: 12,
+                backgroundColor: theme.colors.primarySoft
+              }}
+            >
+              <Text style={{ color: theme.colors.primaryDark, fontWeight: "900" }}>View all</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {recentPortfolio.length ? (
+          <View style={{ gap: 14 }}>
+            {recentPortfolio.map((item) => (
+              <View key={item.portfolioItemId} style={{ borderRadius: 18, padding: 12, backgroundColor: theme.colors.surfaceAlt, gap: 10 }}>
+                <View>
+                  <Text style={{ color: theme.colors.text, fontWeight: "900" }}>{item.title}</Text>
+                  {item.description ? <Text style={{ color: theme.colors.textMuted, marginTop: 4, lineHeight: 19 }}>{item.description}</Text> : null}
+                </View>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {[
+                    { label: "Before", uri: item.beforePhoto.url },
+                    { label: "After", uri: item.afterPhoto.url },
+                  ].map((photo) => (
+                    <Pressable key={`${item.portfolioItemId}-${photo.label}`} onPress={() => setPreviewImage(photo.uri)} style={{ flex: 1, gap: 6 }}>
+                      <Image source={{ uri: photo.uri }} style={{ width: "100%", aspectRatio: 1, borderRadius: 16, backgroundColor: theme.colors.card }} resizeMode="cover" />
+                      <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: "800", textAlign: "center" }}>{photo.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={{ color: theme.colors.textMuted }}>
+            Before and after work photos will appear here after the provider uploads their portfolio.
+          </Text>
+        )}
+      </SurfaceCard>
+
+      <SurfaceCard>
         <Text style={{ fontSize: 18, fontWeight: "900", color: theme.colors.text }}>Available working days</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {visibleDays.length ? (
@@ -211,7 +401,7 @@ export default function ProviderDetailScreen() {
                 }}
               >
                 <Text style={{ color: theme.colors.text, fontWeight: "800" }}>{slot.day}</Text>
-                <Text style={{ color: theme.colors.textMuted, marginTop: 2 }}>{slot.start} - {slot.end}</Text>
+                <Text style={{ color: theme.colors.textMuted, marginTop: 2 }}>{formatWorkingTime(slot.start)} - {formatWorkingTime(slot.end)}</Text>
               </View>
             ))
           ) : (
@@ -295,7 +485,7 @@ export default function ProviderDetailScreen() {
       </SurfaceCard>
 
       <PrimaryButton
-        label="Book this provider"
+        label={isSaved ? "Book saved provider again" : "Book this provider"}
         icon="calendar-outline"
         onPress={() =>
           router.push({
@@ -321,7 +511,7 @@ export default function ProviderDetailScreen() {
           borderColor: theme.colors.border
         }}
       >
-        <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Message provider</Text>
+        <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Message worker</Text>
       </Pressable>
     </FixedScreen>
   );

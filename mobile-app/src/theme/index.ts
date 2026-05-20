@@ -38,6 +38,34 @@ export const theme = {
       : kabisigShadow.md;
   },
   shadows: kabisigShadow,
+  typography: {
+    fontFamily: Platform.select({
+      ios: "System",
+      android: "sans-serif",
+      web: "Arial, sans-serif",
+      default: "System"
+    }),
+    size: {
+      caption: 11,
+      meta: 12,
+      body: 14,
+      bodyLarge: 15,
+      cardTitle: 16,
+      sectionTitle: 18,
+      pageTitle: 22,
+      heroTitle: 28
+    },
+    lineHeight: {
+      caption: 15,
+      meta: 17,
+      body: 20,
+      bodyLarge: 22,
+      cardTitle: 22,
+      sectionTitle: 24,
+      pageTitle: 28,
+      heroTitle: 34
+    }
+  },
   spacing: {
     xs: 8,
     sm: 12,
@@ -47,4 +75,3 @@ export const theme = {
     xxl: 32
   }
 };
-

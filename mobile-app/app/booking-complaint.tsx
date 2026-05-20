@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { router, useLocalSearchParams } from "expo-router";
 import { Pressable, Text, View } from "react-native";
-import { bookingService, complaintService, type Booking } from "@kabisig/shared";
+import { bookingService, complaintService, formatBookingReference, type Booking } from "@kabisig/shared";
 import { BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, LoadingState, PrimaryButton, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
@@ -90,7 +90,7 @@ export default function BookingComplaintScreen() {
 
       <SurfaceCard>
         <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 16 }}>{booking.serviceName}</Text>
-        <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>#{booking.bookingId.replace(/^booking-/, "")}</Text>
+        <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>{formatBookingReference(booking)}</Text>
       </SurfaceCard>
 
       <SurfaceCard>

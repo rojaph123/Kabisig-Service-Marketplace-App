@@ -28,6 +28,7 @@ import type { ChangeEventHandler, ReactNode, SelectHTMLAttributes } from "react"
 import { useEffect, useState } from "react";
 import { useAdminTheme } from "../lib/theme-context";
 import { loadMarketplaceSnapshot } from "../lib/marketplace-data";
+import type { AnalyticsSummary } from "@kabisig/shared";
 
 export function BrandHeader() {
   return (
@@ -186,7 +187,7 @@ export function StatusBadge({ status }: { status: string }) {
       ? "bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/20"
       : status === "Accepted" || status === "Approved"
         ? "bg-blue-100 text-blue-700 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/20"
-        : status === "On the Way"
+        : status === "On the Way" || status === "Waiting for Completion"
           ? "bg-cyan-100 text-cyan-700 ring-cyan-200 dark:bg-cyan-500/15 dark:text-cyan-300 dark:ring-cyan-400/20"
           : status === "In Progress" || status === "Revision Requested"
             ? "bg-indigo-100 text-indigo-700 ring-indigo-200 dark:bg-indigo-500/15 dark:text-indigo-300 dark:ring-indigo-400/20"
@@ -194,7 +195,9 @@ export function StatusBadge({ status }: { status: string }) {
               ? "bg-amber-100 text-amber-700 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-400/20"
               : status === "Rejected" || status === "Cancelled" || status === "Failed"
                 ? "bg-rose-100 text-rose-700 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/20"
-                : "bg-sky-100 text-sky-700 ring-sky-200 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-400/20";
+                : status === "No payment required"
+                  ? "bg-slate-100 text-slate-700 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:ring-slate-400/20"
+                  : "bg-sky-100 text-sky-700 ring-sky-200 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-400/20";
 
   return <span className={clsx("rounded-full px-3 py-1 text-xs font-bold ring-1", color)}>{status}</span>;
 }
@@ -239,8 +242,12 @@ export function Select({
   onChange?: SelectHTMLAttributes<HTMLSelectElement>["onChange"];
   options?: Array<{ label: string; value: string }>;
 }) {
+  const selectProps = onChange
+    ? { value, onChange }
+    : { defaultValue: value, disabled: true };
+
   return (
-    <select value={value} onChange={onChange} className="rounded-2xl border border-slate-200/80 bg-white/92 px-4 py-3 text-sm font-medium text-kabisig-text shadow-sm dark:border-white/10 dark:bg-slate-950/70">
+    <select {...selectProps} className="rounded-2xl border border-slate-200/80 bg-white/92 px-4 py-3 text-sm font-medium text-kabisig-text shadow-sm disabled:cursor-not-allowed disabled:opacity-80 dark:border-white/10 dark:bg-slate-950/70">
       {options?.length
         ? options.map((option) => (
             <option key={option.value} value={option.value}>
@@ -312,12 +319,19 @@ export function EmptyPanel({ title, description }: { title: string; description:
   );
 }
 
-export function KpiRibbon() {
+export function KpiRibbon({ analytics }: { analytics: AnalyticsSummary }) {
+  const unresolvedComplaints = analytics.totalComplaints;
+  const operationalHealth = unresolvedComplaints > 0 ? "Needs review" : analytics.activeBookings > 0 ? "Active" : "Quiet";
+  const providerTrust = analytics.totalProviders
+    ? `${Math.round(((analytics.totalProviders - analytics.pendingApprovals) / analytics.totalProviders) * 100)}%`
+    : "0%";
+  const marketplaceActivity = analytics.activeBookings + analytics.completedBookings > 0 ? `${analytics.activeBookings} active` : "No activity";
+
   return (
     <div className="grid gap-4 rounded-[28px] border border-slate-200/80 bg-white/92 p-5 shadow-soft md:grid-cols-3 dark:border-white/10 dark:bg-slate-900/72">
-      <RibbonItem icon={Activity} label="Operational health" value="Stable" note="Queues within SLA targets" />
-      <RibbonItem icon={ShieldCheck} label="Provider trust" value="94%" note="Verified document review rate" />
-      <RibbonItem icon={Users} label="Marketplace activity" value="High" note="Demand remains healthy this week" />
+      <RibbonItem icon={Activity} label="Operational health" value={operationalHealth} note={`${analytics.activeBookings} active bookings, ${unresolvedComplaints} complaints`} />
+      <RibbonItem icon={ShieldCheck} label="Provider trust" value={providerTrust} note={`${analytics.pendingApprovals} provider applications pending`} />
+      <RibbonItem icon={Users} label="Marketplace activity" value={marketplaceActivity} note={`${analytics.completedBookings} completed, ${analytics.cancelledBookings} cancelled`} />
     </div>
   );
 }

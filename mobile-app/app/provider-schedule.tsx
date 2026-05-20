@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { router } from "expo-router";
 import { Pressable, Switch, Text, View } from "react-native";
 import { userService, type ProviderProfile } from "@kabisig/shared";
-import { BackHeader, FeedbackBanner, FixedScreen, FullScreenPopup, LoadingState, PrimaryButton, SurfaceCard } from "../src/components";
+import { BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, LoadingState, PrimaryButton, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
+import { readableAppError } from "../src/utils/errors";
 
 const startSlots = ["06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00"];
 const endSlots = ["12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"];
@@ -16,6 +17,17 @@ function formatTimeLabel(value: string) {
   return `${hour}:${(rawMinute || 0).toString().padStart(2, "0")} ${suffix}`;
 }
 
+function nextExceptionDates() {
+  return Array.from({ length: 30 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() + index + 1);
+    return {
+      key: date.toISOString().slice(0, 10),
+      label: date.toLocaleDateString("en-US", { month: "short", day: "numeric", weekday: "short" })
+    };
+  });
+}
+
 export default function ProviderScheduleScreen() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -24,6 +36,14 @@ export default function ProviderScheduleScreen() {
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
   const [form, setForm] = useState<ProviderProfile | null>(null);
   const [selectedDay, setSelectedDay] = useState("Mon");
+  const [exceptionDate, setExceptionDate] = useState(nextExceptionDates()[0]?.key || "");
+  const [exceptionReason, setExceptionReason] = useState("");
+
+  const exceptionDateOptions = useMemo(() => nextExceptionDates(), []);
+  const sortedExceptions = useMemo(
+    () => [...(form?.scheduleExceptions ?? [])].sort((a, b) => a.date.localeCompare(b.date)),
+    [form?.scheduleExceptions]
+  );
 
   useEffect(() => {
     async function load() {
@@ -43,11 +63,14 @@ export default function ProviderScheduleScreen() {
     if (!user || !form) return;
     setSaving(true);
     try {
-      await userService.updateProviderProfile(user.id, { availability: form.availability });
+      await userService.updateProviderProfile(user.id, {
+        availability: form.availability,
+        scheduleExceptions: form.scheduleExceptions ?? []
+      });
       setFeedback({
         type: "success",
         title: "Schedule updated",
-        message: "Your working days and available hours were saved."
+        message: "Your working days, available hours, and unavailable dates were saved."
       });
       setShowSuccessOverlay(true);
       setTimeout(() => setShowSuccessOverlay(false), 1000);
@@ -56,11 +79,56 @@ export default function ProviderScheduleScreen() {
       setFeedback({
         type: "error",
         title: "Save failed",
-        message: "We could not save the schedule right now."
+        message: readableAppError(error, "We could not save the schedule right now.")
       });
     } finally {
       setSaving(false);
     }
+  }
+
+  function addUnavailableDate() {
+    if (!form) return;
+    if (!exceptionDate.trim() || !exceptionReason.trim()) {
+      setFeedback({
+        type: "error",
+        title: "Exception details needed",
+        message: "Please choose an unavailable date and add a short reason before saving it."
+      });
+      return;
+    }
+
+    const nextException = {
+      id: `exception-${Date.now()}`,
+      date: exceptionDate,
+      reason: exceptionReason.trim(),
+      unavailable: true,
+      createdAt: new Date().toISOString()
+    };
+
+    setForm({
+      ...form,
+      scheduleExceptions: [
+        ...(form.scheduleExceptions ?? []).filter((item) => item.date !== exceptionDate),
+        nextException
+      ]
+    });
+    setExceptionReason("");
+    setFeedback({
+      type: "success",
+      title: "Unavailable date added",
+      message: "This date will be treated as unavailable in booking and reschedule flows after you save."
+    });
+  }
+
+  function removeException(id: string) {
+    setForm((current) =>
+      current
+        ? {
+            ...current,
+            scheduleExceptions: (current.scheduleExceptions ?? []).filter((item) => item.id !== id)
+          }
+        : current
+    );
   }
 
   if (loading || !form) {
@@ -208,6 +276,79 @@ export default function ProviderScheduleScreen() {
           </View>
         </SurfaceCard>
       ))}
+
+      <SurfaceCard style={{ gap: 14 }}>
+        <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: "900" }}>Unavailable dates</Text>
+        <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
+          Add full-day exceptions for dates when you should not receive bookings, even if your weekly schedule is normally open.
+        </Text>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {exceptionDateOptions.slice(0, 12).map((option) => {
+            const active = exceptionDate === option.key;
+            return (
+              <Pressable
+                key={option.key}
+                onPress={() => setExceptionDate(option.key)}
+                style={{
+                  borderRadius: 999,
+                  paddingHorizontal: 12,
+                  paddingVertical: 9,
+                  backgroundColor: active ? theme.colors.primary : theme.colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: active ? theme.colors.primary : theme.colors.border
+                }}
+              >
+                <Text style={{ color: active ? "#fff" : theme.colors.text, fontWeight: "800", fontSize: 12 }}>{option.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <FormInput
+          label="Reason for unavailable date"
+          value={exceptionReason}
+          onChangeText={setExceptionReason}
+          placeholder="Example: Fully booked, personal leave, travel, training"
+          helper="Customers will not see time slots for this date."
+        />
+
+        <PrimaryButton label="Add unavailable date" icon="calendar-clear-outline" onPress={addUnavailableDate} />
+
+        <View style={{ gap: 10 }}>
+          <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Saved exceptions</Text>
+          {sortedExceptions.length ? (
+            sortedExceptions.map((item) => (
+              <View
+                key={item.id}
+                style={{
+                  borderRadius: 18,
+                  padding: 14,
+                  backgroundColor: theme.colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  flexDirection: "row",
+                  gap: 12,
+                  alignItems: "flex-start"
+                }}
+              >
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={{ color: theme.colors.text, fontWeight: "900" }}>{item.date}</Text>
+                  <Text style={{ color: theme.colors.textMuted }}>{item.reason}</Text>
+                </View>
+                <Pressable
+                  onPress={() => removeException(item.id)}
+                  style={{ borderRadius: 14, paddingHorizontal: 12, paddingVertical: 9, backgroundColor: theme.colors.card }}
+                >
+                  <Text style={{ color: theme.colors.danger, fontWeight: "800" }}>Remove</Text>
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <Text style={{ color: theme.colors.textMuted }}>No unavailable dates added yet.</Text>
+          )}
+        </View>
+      </SurfaceCard>
     </FixedScreen>
   );
 }

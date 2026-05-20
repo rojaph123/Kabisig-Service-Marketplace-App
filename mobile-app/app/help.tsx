@@ -6,6 +6,7 @@ import { messagingService, notificationService } from "@kabisig/shared";
 import { BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, PrimaryButton, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
+import { readableAppError } from "../src/utils/errors";
 
 const faqs = [
   ["How do bookings work?", "Customers choose a service, preferred schedule, provider, and location. Providers then review availability and respond from their jobs dashboard."],
@@ -61,7 +62,7 @@ export default function HelpScreen() {
       setFeedback({
         type: "error",
         title: "Support request failed",
-        message: "We couldn't send your support request right now."
+        message: readableAppError(error, "We couldn't send your support request right now.")
       });
     } finally {
       setSending(false);

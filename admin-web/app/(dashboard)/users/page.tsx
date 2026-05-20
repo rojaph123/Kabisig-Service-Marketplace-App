@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatReadableDateTime } from "@kabisig/shared";
 import { Card, DataTable, EmptyPanel, FilterBar, SearchInput, Select, StatusBadge, Topbar } from "../../../components/ui";
 import { subscribeMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
 
@@ -73,17 +74,18 @@ export default function UsersPage() {
       <Card title="Marketplace users">
         {filteredUsers.length ? (
           <DataTable
-            columns={["Name", "Email", "Role", "Approval", "Created"]}
+            columns={["Name", "Email", "Phone", "Role", "Approval", "Created"]}
             rows={filteredUsers.map((user) => [
               user.fullName,
               user.email,
+              user.phone || "No phone",
               user.role,
               user.role === "provider" ? (
                 <StatusBadge key={user.id} status={approvalByUserId.get(user.id) || "Draft"} />
               ) : (
                 <StatusBadge key={user.id} status="Active" />
               ),
-              user.createdAt,
+              formatReadableDateTime(user.createdAt),
             ])}
           />
         ) : (

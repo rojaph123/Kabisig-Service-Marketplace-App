@@ -1,4 +1,4 @@
-import { createContext, PropsWithChildren, useContext, useMemo, useState, useEffect } from "react";
+import { createContext, PropsWithChildren, useContext, useMemo, useState, useEffect, useRef } from "react";
 import {
   User,
   UserRole,
@@ -7,6 +7,7 @@ import {
   authService,
   userService,
   providerService,
+  KABISIG_TERMS_VERSION,
 } from "@kabisig/shared";
 import { firebaseAuth } from "../services/firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -20,8 +21,24 @@ function formatAuthError(error: unknown) {
     return "Incorrect email or password, or the account does not exist yet.";
   }
 
+  if (error.message.includes("auth/invalid-email")) {
+    return "Please enter a valid email address.";
+  }
+
   if (error.message.includes("auth/user-not-found")) {
     return "No account was found for that email address.";
+  }
+
+  if (error.message.includes("auth/user-disabled")) {
+    return "This account has been disabled. Please contact support or the admin team.";
+  }
+
+  if (error.message.includes("auth/too-many-requests")) {
+    return "Too many failed sign-in attempts. Please wait a moment before trying again.";
+  }
+
+  if (error.message.includes("auth/network-request-failed")) {
+    return "Network connection failed. Please check your internet connection and try again.";
   }
 
   if (error.message.includes("auth/email-already-in-use")) {
@@ -60,12 +77,24 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const GOOGLE_AUTH_TIMEOUT_MS = 45000;
+
+function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(message)), GOOGLE_AUTH_TIMEOUT_MS);
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => clearTimeout(timeout));
+  });
+}
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const googleAuthInFlightRef = useRef(false);
 
   async function loadAppUser(uid: string) {
     const userDoc = await authService.getUserDocument(uid);
@@ -87,14 +116,21 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   // Listen to Firebase auth state changes
   useEffect(() => {
+    setLoading(true);
     const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
       try {
         if (firebaseUser) {
+          if (googleAuthInFlightRef.current) {
+            return;
+          }
           const appUser = await loadAppUser(firebaseUser.uid);
           if (appUser) {
             setUser(appUser);
             setSelectedRole(appUser.role);
             setError(null);
+          } else {
+            setUser(null);
+            setSelectedRole(null);
           }
         } else {
           setUser(null);
@@ -121,7 +157,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
       async signIn({ email, password, role }) {
         try {
           setError(null);
-          setLoading(true);
           const firebaseUser = await authService.loginWithEmail(email, password);
           const appUser = await loadAppUser(firebaseUser.uid);
 
@@ -137,18 +172,25 @@ export function AuthProvider({ children }: PropsWithChildren) {
           const errorMsg = formatAuthError(err);
           setError(errorMsg);
           throw new Error(errorMsg);
-        } finally {
-          setLoading(false);
         }
       },
       async register({ fullName, email, password, role, phone }) {
         try {
           setError(null);
           setLoading(true);
-          const { uid } = await authService.registerWithEmail(email, password, fullName, role);
+          const normalizedPhone = phone?.trim();
+          const { uid } = await authService.registerWithEmail(email, password, fullName, role, normalizedPhone);
           if (phone?.trim() && role === "customer") {
             await userService.updateCustomerProfile(uid, { phone: phone.trim() });
           }
+          if (normalizedPhone) {
+            await userService.updateUserDocument(uid, { phone: normalizedPhone });
+          }
+          const acceptedAt = new Date().toISOString();
+          await userService.updateUserDocument(uid, {
+            termsAcceptedAt: acceptedAt,
+            termsVersion: KABISIG_TERMS_VERSION
+          });
           const userDoc = await authService.getUserDocument(uid);
           if (userDoc) {
             let appUser: AppUser = { ...userDoc };
@@ -164,10 +206,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
             id: uid,
             email,
             fullName,
+            phone: normalizedPhone,
             role,
             authProvider: "email",
             profilePhoto: "",
             appTheme: "system",
+            termsAcceptedAt: acceptedAt,
+            termsVersion: KABISIG_TERMS_VERSION,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             onboardingCompleted: role === "provider" ? false : undefined,
@@ -187,16 +232,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
       async signInWithGoogle({ role, intent, idToken, accessToken, usePopup }) {
         try {
           setError(null);
-          setLoading(true);
-          const result = await authService.completeGoogleAuth({
-            role,
-            intent,
-            idToken,
-            accessToken,
-            usePopup
-          });
+          if (role !== "customer") {
+            throw new Error("Google sign-in is available for customer accounts only. Skilled worker accounts must use email and password.");
+          }
+          googleAuthInFlightRef.current = true;
+          const result = await withTimeout(
+            authService.completeGoogleAuth({
+              role,
+              intent,
+              idToken,
+              accessToken,
+              usePopup
+            }),
+            "Google sign-in took too long. Please check your connection and try again."
+          );
 
-          const appUser = (await loadAppUser(result.user.uid)) || ({ ...result.appUser } as AppUser);
+          const appUser = { ...result.appUser } as AppUser;
+          if (intent === "register") {
+            const acceptedAt = new Date().toISOString();
+            await userService.updateUserDocument(appUser.id, {
+              termsAcceptedAt: acceptedAt,
+              termsVersion: KABISIG_TERMS_VERSION
+            });
+            appUser.termsAcceptedAt = acceptedAt;
+            appUser.termsVersion = KABISIG_TERMS_VERSION;
+          }
 
           setUser(appUser);
           setSelectedRole(role);
@@ -206,15 +266,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setError(errorMsg);
           throw new Error(errorMsg);
         } finally {
-          setLoading(false);
+          googleAuthInFlightRef.current = false;
         }
       },
       async signOut() {
         try {
-          await authService.signOut();
           setUser(null);
           setSelectedRole(null);
           setError(null);
+          await authService.signOut();
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : "Sign out failed";
           setError(errorMsg);

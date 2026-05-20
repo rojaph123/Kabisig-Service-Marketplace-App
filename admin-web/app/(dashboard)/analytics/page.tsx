@@ -25,6 +25,17 @@ export default function AnalyticsPage() {
     return subscribeMarketplaceAnalyticsSummary(setAnalytics);
   }, []);
 
+  const analyticsView = useMemo(() => {
+    if (!analytics) return null;
+    const byCity = cityFilter === "all"
+      ? analytics.bookingsByCity
+      : analytics.bookingsByCity.filter((item) => item.city === cityFilter);
+    const byCategory = categoryFilter === "all"
+      ? analytics.bookingsByCategory
+      : analytics.bookingsByCategory.filter((item) => item.category === categoryFilter);
+    return { ...analytics, bookingsByCity: byCity, bookingsByCategory: byCategory };
+  }, [analytics, categoryFilter, cityFilter]);
+
   if (!analytics) {
     return (
       <>
@@ -34,16 +45,8 @@ export default function AnalyticsPage() {
     );
   }
 
-  const analyticsView = useMemo(() => {
-    const byCity = cityFilter === "all"
-      ? analytics.bookingsByCity
-      : analytics.bookingsByCity.filter((item) => item.city === cityFilter);
-    const byCategory = categoryFilter === "all"
-      ? analytics.bookingsByCategory
-      : analytics.bookingsByCategory.filter((item) => item.category === categoryFilter);
-    return { ...analytics, bookingsByCity: byCity, bookingsByCategory: byCategory };
-  }, [analytics, categoryFilter, cityFilter]);
   const avgProviderRating = (analytics.avgProviderRating ?? 0).toFixed(1);
+  const filteredAnalytics = analyticsView ?? analytics;
 
   return (
     <>
@@ -71,14 +74,14 @@ export default function AnalyticsPage() {
         />
       </FilterBar>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <DashboardStatCard title="Active Bookings" value={analyticsView.activeBookings.toString()} hint="Current operational load" />
-        <DashboardStatCard title="Completed Bookings" value={analyticsView.completedBookings.toString()} hint="Completed jobs from Firestore" />
-        <DashboardStatCard title="Cancelled Bookings" value={analyticsView.cancelledBookings.toString()} hint="Cancelled booking volume" />
-        <DashboardStatCard title="Transactions" value={analyticsView.totalTransactions.toString()} hint="Payment records in the marketplace" />
-        <DashboardStatCard title="Complaints" value={analyticsView.totalComplaints.toString()} hint="Issue monitoring by type" />
+        <DashboardStatCard title="Active Bookings" value={filteredAnalytics.activeBookings.toString()} hint="Current operational load" />
+        <DashboardStatCard title="Completed Bookings" value={filteredAnalytics.completedBookings.toString()} hint="Completed jobs from Firestore" />
+        <DashboardStatCard title="Cancelled Bookings" value={filteredAnalytics.cancelledBookings.toString()} hint="Cancelled booking volume" />
+        <DashboardStatCard title="Transactions" value={filteredAnalytics.totalTransactions.toString()} hint="Payment records in the marketplace" />
+        <DashboardStatCard title="Complaints" value={filteredAnalytics.totalComplaints.toString()} hint="Issue monitoring by type" />
         <DashboardStatCard title="Avg Provider Rating" value={avgProviderRating} hint="Approved provider profile ratings" />
       </div>
-      <AnalyticsCharts analytics={analyticsView} />
+      <AnalyticsCharts analytics={filteredAnalytics} />
       <Card
         title="Advanced KPI notes"
         action={

@@ -6,6 +6,7 @@ const { randomUUID } = require("crypto");
 admin.initializeApp();
 
 const db = admin.firestore();
+const webCallableOptions = { cors: true };
 
 async function requireAdmin(context) {
   const auth = context.auth;
@@ -16,6 +17,15 @@ async function requireAdmin(context) {
   const userSnap = await db.collection("users").doc(auth.uid).get();
   if (!userSnap.exists || userSnap.data()?.role !== "admin") {
     throw new HttpsError("permission-denied", "Admin privileges are required.");
+  }
+
+  return auth.uid;
+}
+
+function requireSignedIn(context) {
+  const auth = context.auth;
+  if (!auth?.uid) {
+    throw new HttpsError("unauthenticated", "Authentication is required.");
   }
 
   return auth.uid;
@@ -75,6 +85,14 @@ function chunk(items, size) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+async function commitDeletes(refs) {
+  for (const batchRefs of chunk(refs, 450)) {
+    const batch = db.batch();
+    batchRefs.forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
 }
 
 async function sendExpoPushMessages(messages) {
@@ -238,13 +256,13 @@ async function refreshMarketplaceAnalytics() {
   }
 }
 
-exports.uploadMediaAsset = onCall(async (request) => {
+exports.uploadMediaAsset = onCall(webCallableOptions, async (request) => {
   const auth = request.auth;
   if (!auth?.uid) {
     throw new HttpsError("unauthenticated", "Authentication is required.");
   }
 
-  const { dataUrl, storagePath, mimeType, fileName, uploadedBy } = request.data || {};
+  const { dataUrl, storagePath, mimeType, fileName, uploadedBy, maxSizeBytes } = request.data || {};
   if (!dataUrl || !storagePath || typeof dataUrl !== "string" || typeof storagePath !== "string") {
     throw new HttpsError("invalid-argument", "dataUrl and storagePath are required.");
   }
@@ -262,6 +280,9 @@ exports.uploadMediaAsset = onCall(async (request) => {
 
   const resolvedMimeType = mimeType || dataUrl.match(/^data:([^;]+);base64,/)?.[1] || "application/octet-stream";
   const buffer = Buffer.from(base64Payload, "base64");
+  if (typeof maxSizeBytes === "number" && maxSizeBytes > 0 && buffer.length > maxSizeBytes) {
+    throw new HttpsError("resource-exhausted", `The selected file must be ${Math.floor(maxSizeBytes / 1024 / 1024)} MB or smaller.`);
+  }
   const bucket = admin.storage().bucket();
   const file = bucket.file(storagePath);
   const token = randomUUID();
@@ -286,7 +307,7 @@ exports.uploadMediaAsset = onCall(async (request) => {
   };
 });
 
-exports.submitProviderApplication = onCall(async (request) => {
+exports.submitProviderApplication = onCall(webCallableOptions, async (request) => {
   const auth = request.auth;
   if (!auth?.uid) {
     throw new HttpsError("unauthenticated", "Authentication is required.");
@@ -324,7 +345,7 @@ exports.submitProviderApplication = onCall(async (request) => {
   return { applicationId };
 });
 
-exports.approveProvider = onCall(async (request) => {
+exports.approveProvider = onCall(webCallableOptions, async (request) => {
   const adminId = await requireAdmin(request);
   const { applicationId, userId } = request.data || {};
   if (!applicationId || !userId) {
@@ -356,7 +377,7 @@ exports.approveProvider = onCall(async (request) => {
   return { ok: true };
 });
 
-exports.rejectProvider = onCall(async (request) => {
+exports.rejectProvider = onCall(webCallableOptions, async (request) => {
   const adminId = await requireAdmin(request);
   const { applicationId, userId, notes } = request.data || {};
   if (!applicationId || !userId) {
@@ -388,7 +409,7 @@ exports.rejectProvider = onCall(async (request) => {
   return { ok: true };
 });
 
-exports.requestProviderRevision = onCall(async (request) => {
+exports.requestProviderRevision = onCall(webCallableOptions, async (request) => {
   const adminId = await requireAdmin(request);
   const { applicationId, userId, notes } = request.data || {};
   if (!applicationId || !userId) {
@@ -420,7 +441,7 @@ exports.requestProviderRevision = onCall(async (request) => {
   return { ok: true };
 });
 
-exports.updateProviderModeration = onCall(async (request) => {
+exports.updateProviderModeration = onCall(webCallableOptions, async (request) => {
   const adminId = await requireAdmin(request);
   const { userId, status, reason } = request.data || {};
   if (!userId || !status) {
@@ -449,7 +470,7 @@ exports.updateProviderModeration = onCall(async (request) => {
   return { ok: true };
 });
 
-exports.createPaymentRecord = onCall(async (request) => {
+exports.createPaymentRecord = onCall(webCallableOptions, async (request) => {
   const auth = request.auth;
   if (!auth?.uid) {
     throw new HttpsError("unauthenticated", "Authentication is required.");
@@ -491,7 +512,7 @@ exports.createPaymentRecord = onCall(async (request) => {
   return { paymentId };
 });
 
-exports.updatePaymentStatus = onCall(async (request) => {
+exports.updatePaymentStatus = onCall(webCallableOptions, async (request) => {
   const auth = request.auth;
   if (!auth?.uid) {
     throw new HttpsError("unauthenticated", "Authentication is required.");
@@ -518,7 +539,7 @@ exports.updatePaymentStatus = onCall(async (request) => {
   return { ok: true };
 });
 
-exports.updateBookingStatus = onCall(async (request) => {
+exports.updateBookingStatus = onCall(webCallableOptions, async (request) => {
   const auth = request.auth;
   if (!auth?.uid) {
     throw new HttpsError("unauthenticated", "Authentication is required.");
@@ -568,6 +589,100 @@ exports.updateBookingStatus = onCall(async (request) => {
   return { ok: true };
 });
 
+exports.confirmAcceptedBooking = onCall(webCallableOptions, async (request) => {
+  const auth = request.auth;
+  if (!auth?.uid) {
+    throw new HttpsError("unauthenticated", "Authentication is required.");
+  }
+
+  const { bookingId } = request.data || {};
+  if (!bookingId) {
+    throw new HttpsError("invalid-argument", "bookingId is required.");
+  }
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+  const bookingSnap = await bookingRef.get();
+  if (!bookingSnap.exists) {
+    throw new HttpsError("not-found", "Booking not found.");
+  }
+
+  const booking = bookingSnap.data();
+  if (booking.customerId !== auth.uid) {
+    throw new HttpsError("permission-denied", "Only the customer can confirm this booking.");
+  }
+
+  if (booking.status !== "Accepted") {
+    throw new HttpsError("failed-precondition", "Only accepted bookings can be confirmed.");
+  }
+
+  if (booking.customerAcceptanceConfirmedAt) {
+    return { ok: true, confirmedAt: booking.customerAcceptanceConfirmedAt };
+  }
+
+  const confirmedAt = new Date().toISOString();
+  await bookingRef.set(
+    {
+      customerAcceptanceConfirmedAt: confirmedAt,
+      customerAcceptanceConfirmedBy: auth.uid,
+      updatedAt: confirmedAt,
+    },
+    { merge: true }
+  );
+
+  return { ok: true, confirmedAt };
+});
+
+exports.deleteUserNotifications = onCall(webCallableOptions, async (request) => {
+  const userId = requireSignedIn(request);
+  const { notificationIds, deleteAll } = request.data || {};
+  let refs = [];
+
+  if (deleteAll === true) {
+    const snapshot = await db.collection("notifications").where("userId", "==", userId).get();
+    refs = snapshot.docs.map((doc) => doc.ref);
+  } else {
+    if (!Array.isArray(notificationIds) || !notificationIds.length) {
+      throw new HttpsError("invalid-argument", "notificationIds or deleteAll is required.");
+    }
+
+    const uniqueIds = [...new Set(notificationIds.filter((id) => typeof id === "string"))].slice(0, 200);
+    const docs = await Promise.all(uniqueIds.map((id) => db.collection("notifications").doc(id).get()));
+    const unauthorized = docs.find((doc) => doc.exists && doc.data()?.userId !== userId);
+    if (unauthorized) {
+      throw new HttpsError("permission-denied", "You can only delete your own notifications.");
+    }
+    refs = docs.filter((doc) => doc.exists).map((doc) => doc.ref);
+  }
+
+  await commitDeletes(refs);
+  return { deleted: refs.length };
+});
+
+exports.deleteMessageThreads = onCall(webCallableOptions, async (request) => {
+  const userId = requireSignedIn(request);
+  const { threadIds } = request.data || {};
+  if (!Array.isArray(threadIds) || !threadIds.length) {
+    throw new HttpsError("invalid-argument", "threadIds is required.");
+  }
+
+  const uniqueThreadIds = [...new Set(threadIds.filter((id) => typeof id === "string"))].slice(0, 50);
+  const threadDocs = await Promise.all(uniqueThreadIds.map((id) => db.collection("messageThreads").doc(id).get()));
+  const unauthorized = threadDocs.find((doc) => doc.exists && !(doc.data()?.participants || []).includes(userId));
+  if (unauthorized) {
+    throw new HttpsError("permission-denied", "You can only delete conversations you participate in.");
+  }
+
+  const refsToDelete = [];
+  for (const threadDoc of threadDocs) {
+    if (!threadDoc.exists) continue;
+    const messages = await db.collection("messages").where("threadId", "==", threadDoc.id).get();
+    refsToDelete.push(...messages.docs.map((doc) => doc.ref), threadDoc.ref);
+  }
+
+  await commitDeletes(refsToDelete);
+  return { deleted: refsToDelete.length };
+});
+
 exports.deliverUserNotificationPush = onDocumentCreated("notifications/{notificationId}", async (event) => {
   const notification = event.data?.data();
   if (!notification?.userId || !notification?.title || !notification?.body) {
@@ -588,6 +703,8 @@ exports.deliverUserNotificationPush = onDocumentCreated("notifications/{notifica
   const messages = tokenDocs.map((entry) => ({
     to: entry.data().token,
     sound: "default",
+    channelId: "default",
+    priority: "high",
     title: notification.title,
     body: notification.body,
     data: {
@@ -602,6 +719,25 @@ exports.deliverUserNotificationPush = onDocumentCreated("notifications/{notifica
   } catch (error) {
     console.error("Failed to send push notifications:", error);
   }
+});
+
+exports.recalculateProviderRating = onDocumentWritten("reviews/{reviewId}", async (event) => {
+  const after = event.data?.after?.exists ? event.data.after.data() : null;
+  const before = event.data?.before?.exists ? event.data.before.data() : null;
+  const providerId = after?.providerId || before?.providerId;
+  if (!providerId) {
+    return;
+  }
+
+  const snapshot = await db.collection("reviews").where("providerId", "==", providerId).get();
+  const ratings = snapshot.docs
+    .map((entry) => Number(entry.data()?.rating))
+    .filter((rating) => Number.isFinite(rating));
+  const average = ratings.length
+    ? ratings.reduce((total, rating) => total + rating, 0) / ratings.length
+    : 0;
+
+  await db.collection("providerProfiles").doc(providerId).set({ rating: average }, { merge: true });
 });
 
 // ============= Notification Triggers =============
@@ -631,7 +767,7 @@ exports.onNewMessage = onDocumentCreated("messages/{messageId}", async (event) =
         userId,
         type: "message",
         title: `Message from ${senderName}`,
-        body: message.content?.substring(0, 100) || "Sent an attachment",
+        body: (message.text || message.content || "Sent an attachment").substring(0, 100),
         route: `/chat?threadId=${message.threadId}`,
         isRead: false,
         createdAt: new Date().toISOString(),
@@ -662,8 +798,8 @@ exports.onNewBooking = onDocumentCreated("bookings/{bookingId}", async (event) =
       userId: booking.providerId,
       type: "booking",
       title: "New Booking Request",
-      body: `${customerName} requested a booking for ${booking.serviceType || "a service"}`,
-      route: `/booking-request?bookingId=${event.params.bookingId}`,
+      body: `${customerName} requested a booking for ${booking.serviceName || booking.serviceType || "a service"}`,
+      route: `/booking-detail?bookingId=${event.params.bookingId}`,
       isRead: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -674,9 +810,9 @@ exports.onNewBooking = onDocumentCreated("bookings/{bookingId}", async (event) =
 });
 
 // Send notification when booking status changes
-exports.onBookingStatusChange = onDocumentWritten("bookings/{bookingId}", async (change) => {
-  const beforeData = change.before.data();
-  const afterData = change.after.data();
+exports.onBookingStatusChange = onDocumentWritten("bookings/{bookingId}", async (event) => {
+  const beforeData = event.data?.before?.exists ? event.data.before.data() : null;
+  const afterData = event.data?.after?.exists ? event.data.after.data() : null;
 
   if (!afterData || beforeData?.status === afterData?.status) {
     return;
@@ -707,7 +843,7 @@ exports.onBookingStatusChange = onDocumentWritten("bookings/{bookingId}", async 
       title = "Service Completed";
       body = "Your service is complete. Please leave a review";
     } else if (status === "Cancelled") {
-      notifyUserId = status === "Cancelled" && beforeData?.status !== "Cancelled" ? (beforeData?.providerId === change.after.ref.parent.parent?.id ? customerId : providerId) : null;
+      notifyUserId = providerId;
       title = "Booking Cancelled";
       body = "A booking has been cancelled";
     }
@@ -720,7 +856,7 @@ exports.onBookingStatusChange = onDocumentWritten("bookings/{bookingId}", async 
         type: "booking_update",
         title,
         body,
-        route: `/booking-detail?bookingId=${change.after.ref.id}`,
+        route: `/booking-detail?bookingId=${event.params.bookingId}`,
         isRead: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -732,9 +868,9 @@ exports.onBookingStatusChange = onDocumentWritten("bookings/{bookingId}", async 
 });
 
 // Send notification when provider application status changes
-exports.onProviderApplicationStatusChange = onDocumentWritten("providerApplications/{applicationId}", async (change) => {
-  const beforeData = change.before.data();
-  const afterData = change.after.data();
+exports.onProviderApplicationStatusChange = onDocumentWritten("providerApplications/{applicationId}", async (event) => {
+  const beforeData = event.data?.before?.exists ? event.data.before.data() : null;
+  const afterData = event.data?.after?.exists ? event.data.after.data() : null;
 
   if (!afterData || beforeData?.status === afterData?.status) {
     return;
@@ -752,7 +888,7 @@ exports.onProviderApplicationStatusChange = onDocumentWritten("providerApplicati
     } else if (status === "Rejected") {
       title = "Application Rejected";
       body = "Your provider application was not approved. Check feedback in your profile";
-    } else if (status === "Pending Review") {
+    } else if (status === "Pending Approval") {
       title = "Application Received";
       body = "Your provider application is being reviewed";
     }
@@ -788,7 +924,7 @@ exports.onPaymentProcessed = onDocumentCreated("payments/{paymentId}", async (ev
     let title = "";
     let body = "";
 
-    if (payment.status === "Completed") {
+    if (payment.status === "Paid" || payment.status === "Completed") {
       notifyUserId = payment.customerId;
       title = "Payment Received";
       body = `Payment of ₱${payment.amount.toFixed(2)} has been processed`;
@@ -810,7 +946,7 @@ exports.onPaymentProcessed = onDocumentCreated("payments/{paymentId}", async (ev
         type: "payment",
         title,
         body,
-        route: "/payments",
+        route: "/(tabs)/payments",
         isRead: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -821,7 +957,7 @@ exports.onPaymentProcessed = onDocumentCreated("payments/{paymentId}", async (ev
   }
 });
 
-exports.refreshMarketplaceAnalytics = onCall(async (request) => {
+exports.refreshMarketplaceAnalytics = onCall(webCallableOptions, async (request) => {
   await requireAdmin(request);
   return refreshMarketplaceAnalytics();
 });
@@ -846,7 +982,7 @@ exports.refreshAnalyticsOnMarketplaceWrite = onDocumentWritten(
   }
 );
 
-exports.exportMarketplaceBackup = onCall(async (request) => {
+exports.exportMarketplaceBackup = onCall(webCallableOptions, async (request) => {
   const adminId = await requireAdmin(request);
   const [users, providers, applications, bookings, payments, complaints, categories] = await Promise.all([
     db.collection("users").get(),

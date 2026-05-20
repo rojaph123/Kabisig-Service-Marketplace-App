@@ -11,6 +11,13 @@
     "mobile": "npm run dev --workspace mobile-app",
     "admin": "npm run dev --workspace admin-web",
     "functions": "npm run serve --workspace functions",
-    "lint": "npm run lint --workspace mobile-app && npm run lint --workspace admin-web"
+    "lint": "npm run lint --workspace mobile-app && npm run lint --workspace admin-web",
+    "android": "npm run android --workspace mobile-app",
+    "ios": "npm run ios --workspace mobile-app"
+  },
+  "version": "1.0.0",
+  "dependencies": {
+    "expo": "~54.0.34",
+    "react-native": "0.81.5"
   }
 }

@@ -1,0 +1,60 @@
+{
+  "cli": {
+    "version": ">= 18.3.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDpI4z2rnwLehF8KqAfWzkbONDqj9DE8Po",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "kabisig-92643.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "kabisig-92643",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "kabisig-92643.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "714645483162",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:714645483162:web:dd109b80731138e4043923",
+        "EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID": "714645483162-5u7mpocg6dp78sqppu3r9f8aja9qeie5.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "714645483162-6r73ct5ss4gl84j8go3tujagbq0sk435.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "714645483162-gkca461tp7k4dedcinlv1e60qellq02a.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBUeDtViIyunDpmyJwtgdCD1k50u2Hae_4"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDpI4z2rnwLehF8KqAfWzkbONDqj9DE8Po",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "kabisig-92643.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "kabisig-92643",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "kabisig-92643.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "714645483162",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:714645483162:web:dd109b80731138e4043923",
+        "EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID": "714645483162-5u7mpocg6dp78sqppu3r9f8aja9qeie5.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "714645483162-6r73ct5ss4gl84j8go3tujagbq0sk435.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "714645483162-gkca461tp7k4dedcinlv1e60qellq02a.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBUeDtViIyunDpmyJwtgdCD1k50u2Hae_4"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDpI4z2rnwLehF8KqAfWzkbONDqj9DE8Po",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "kabisig-92643.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "kabisig-92643",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "kabisig-92643.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "714645483162",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:714645483162:web:dd109b80731138e4043923",
+        "EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID": "714645483162-5u7mpocg6dp78sqppu3r9f8aja9qeie5.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "714645483162-6r73ct5ss4gl84j8go3tujagbq0sk435.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "714645483162-gkca461tp7k4dedcinlv1e60qellq02a.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyBUeDtViIyunDpmyJwtgdCD1k50u2Hae_4"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

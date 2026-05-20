@@ -2,7 +2,7 @@ import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { categoryService, coverageAreaService, providerService, userService, type AvailabilitySchedule, type CoverageArea, type ProviderApprovalStatus, type ProviderProfile, type ServiceCategory } from "@kabisig/shared";
+import { categoryService, coverageAreaService, mediaService, providerService, userService, type AvailabilitySchedule, type CoverageArea, type ProviderApprovalStatus, type ProviderProfile, type ServiceCategory } from "@kabisig/shared";
 import {
   BackHeader,
   FeedbackBanner,
@@ -81,7 +81,7 @@ function monthDays(cursor: Date) {
   const firstDay = new Date(year, month, 1).getDay();
   const leading = (firstDay + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells: Array<Date | null> = [];
+  const cells: (Date | null)[] = [];
 
   for (let i = 0; i < leading; i += 1) {
     cells.push(null);
@@ -96,11 +96,12 @@ function monthDays(cursor: Date) {
 }
 
 export default function ProviderOnboardingScreen() {
-  const { submitProviderOnboarding, user } = useAuth();
+  const { signOut, submitProviderOnboarding, user } = useAuth();
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [coverageAreas, setCoverageAreas] = useState<CoverageArea[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<Record<string, boolean>>({});
   const [fullName, setFullName] = useState(user?.fullName || "");
   const [businessName, setBusinessName] = useState("");
   const [mobileNumber, setMobileNumber] = useState("");
@@ -301,6 +302,67 @@ export default function ProviderOnboardingScreen() {
   );
 
   const hasMissingRequirements = Object.values(requiredFields).some(Boolean);
+  const hasUploadsInProgress = Object.values(uploadingFiles).some(Boolean);
+
+  function setUploading(key: string, uploading: boolean) {
+    setUploadingFiles((current) => ({ ...current, [key]: uploading }));
+  }
+
+  async function preUploadSingle(key: string, value: string, path: string, fileName: string, setter: (value: string) => void) {
+    setter(value);
+    if (!user?.id || !value || !value.startsWith("data:")) return;
+
+    setUploading(key, true);
+    try {
+      const uploaded = await mediaService.uploadMedia(value, path, fileName, user.id);
+      setter(uploaded.url);
+      setPopup({
+        tone: "success",
+        title: "Upload ready",
+        message: `${fileName.replace(/-/g, " ")} was uploaded and will be attached instantly when you submit.`
+      });
+    } catch (error) {
+      console.warn(`Pre-upload failed for ${key}:`, error);
+      setPopup({
+        tone: "error",
+        title: "Upload failed",
+        message: error instanceof Error ? error.message : "This file could not be uploaded. Please choose it again."
+      });
+      setter("");
+    } finally {
+      setUploading(key, false);
+    }
+  }
+
+  async function preUploadSampleWorks(values: string[]) {
+    setSampleWorks(values);
+    if (!user?.id) return;
+
+    const newItems = values.filter((item) => item.startsWith("data:"));
+    if (!newItems.length) return;
+
+    setUploading("sampleWorks", true);
+    try {
+      const existingItems = values.filter((item) => !item.startsWith("data:"));
+      const uploadedItems = await mediaService.uploadMany(newItems, `providerDocuments/${user.id}/sample-works`, user.id);
+      setSampleWorks([...existingItems, ...uploadedItems.map((item) => item.url)]);
+      setPopup({
+        tone: "success",
+        title: "Sample works ready",
+        message: "Your selected sample work files were uploaded ahead of submission."
+      });
+    } catch (error) {
+      console.warn("Pre-upload failed for sample works:", error);
+      setPopup({
+        tone: "error",
+        title: "Sample upload failed",
+        message: error instanceof Error ? error.message : "One or more sample files could not be uploaded. Please choose them again."
+      });
+      setSampleWorks(values.filter((item) => !item.startsWith("data:")));
+    } finally {
+      setUploading("sampleWorks", false);
+    }
+  }
 
   function toggleCategory(name: string) {
     setSelectedCategories((current) => (current.includes(name) ? current.filter((item) => item !== name) : [...current, name]));
@@ -382,6 +444,15 @@ export default function ProviderOnboardingScreen() {
       return;
     }
 
+    if (hasUploadsInProgress) {
+      setPopup({
+        tone: "info",
+        title: "Uploads still running",
+        message: "Please wait for the selected pictures and documents to finish uploading before submitting."
+      });
+      return;
+    }
+
     try {
       setSubmitting(true);
       await submitProviderOnboarding({
@@ -436,8 +507,14 @@ export default function ProviderOnboardingScreen() {
   return (
     <FixedScreen
       style={{ backgroundColor: theme.colors.background }}
-      header={<BackHeader title="Provider Onboarding" onBack={() => router.replace("/(auth)/role-selection")} />}
-      footer={<PrimaryButton label={submitting ? "Submitting..." : "Submit application"} onPress={() => void handleSubmit()} disabled={submitting} />}
+      header={<BackHeader title="Provider Onboarding" onBack={() => void signOut().finally(() => router.replace("/(auth)/role-selection"))} />}
+      footer={
+        <PrimaryButton
+          label={submitting ? "Submitting..." : hasUploadsInProgress ? "Uploading files..." : "Submit application"}
+          onPress={() => void handleSubmit()}
+          disabled={submitting || hasUploadsInProgress}
+        />
+      }
     >
       {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
       <FullScreenPopup
@@ -754,10 +831,14 @@ export default function ProviderOnboardingScreen() {
                     }}
                   >
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                      <Text style={{ color: theme.colors.text, fontWeight: "800", flex: 1 }}>{category.name}</Text>
+                      <Text style={{ color: theme.colors.text, fontWeight: "800", flex: 1 }} numberOfLines={2}>
+                        {category.name}
+                      </Text>
                       <Ionicons name={active ? "checkmark-circle" : "add-circle-outline"} size={20} color={active ? theme.colors.primary : theme.colors.textMuted} />
                     </View>
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 12, lineHeight: 18 }}>{category.description}</Text>
+                    <Text style={{ color: theme.colors.textMuted, fontSize: 12, lineHeight: 18 }} numberOfLines={3} ellipsizeMode="tail">
+                      {category.description}
+                    </Text>
                   </Pressable>
                 );
               })}
@@ -766,10 +847,10 @@ export default function ProviderOnboardingScreen() {
             <MultiMediaPickerField
               label="Sample works"
               values={sampleWorks}
-              onChange={setSampleWorks}
+              onChange={(values) => void preUploadSampleWorks(values)}
               maxSizeMb={8}
               onError={(message) => setPopup({ tone: "error", title: "Upload too large", message })}
-              helper="If you do not have formal documents for qualifications, upload sample photos or videos of your previous work here."
+              helper={uploadingFiles.sampleWorks ? "Uploading sample works now. You can keep filling out the form." : "If you do not have formal documents for qualifications, upload sample photos or videos of your previous work here."}
             />
             <View style={{ gap: 8 }}>
               <Text style={{ color: theme.colors.text, fontSize: 13, fontWeight: "800" }}>
@@ -814,30 +895,30 @@ export default function ProviderOnboardingScreen() {
           <ImageUploadField
             label="Profile photo"
             value={profilePhoto}
-            onChange={setProfilePhoto}
+            onChange={(value) => void preUploadSingle("profilePhoto", value, `providerDocuments/${user?.id}/profile`, "profile-photo", setProfilePhoto)}
             required
             error={requiredFields.profilePhoto}
             maxSizeMb={5}
             onError={(message) => setPopup({ tone: "error", title: "Upload too large", message })}
-            helper="Use a formal photo with a plain white background. This is required and will be reviewed by the admin team."
+            helper={uploadingFiles.profilePhoto ? "Uploading profile photo now. You can keep filling out the form." : "Use a formal photo with a plain white background. This is required and will be reviewed by the admin team."}
           />
           <ImageUploadField
             label="Valid ID"
             value={validId}
-            onChange={setValidId}
+            onChange={(value) => void preUploadSingle("validId", value, `providerDocuments/${user?.id}/valid-id`, "valid-id", setValidId)}
             required
             error={requiredFields.validId}
             maxSizeMb={6}
             onError={(message) => setPopup({ tone: "error", title: "Upload too large", message })}
-            helper="Upload a clear photo of your valid government ID."
+            helper={uploadingFiles.validId ? "Uploading valid ID now. You can keep filling out the form." : "Upload a clear photo of your valid government ID."}
           />
           <ImageUploadField
             label="Permit or certificate"
             value={permitCertificate}
-            onChange={setPermitCertificate}
+            onChange={(value) => void preUploadSingle("permitCertificate", value, `providerDocuments/${user?.id}/permit`, "permit-certificate", setPermitCertificate)}
             maxSizeMb={6}
             onError={(message) => setPopup({ tone: "error", title: "Upload too large", message })}
-            helper="Upload your permit or certificate if available."
+            helper={uploadingFiles.permitCertificate ? "Uploading permit or certificate now. You can keep filling out the form." : "Upload your permit or certificate if available."}
           />
           <FormInput label="Emergency contact" value={contact} onChangeText={setContact} required error={requiredFields.contact} />
         </View>

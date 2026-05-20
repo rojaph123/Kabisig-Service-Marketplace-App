@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { bookingService, paymentService, userService, type Booking, type Payment, type User } from "@kabisig/shared";
+import { bookingService, formatBookingReference, formatPaymentReference, formatReadableDateTime, paymentService, userService, type Booking, type Payment, type User } from "@kabisig/shared";
 import { Text, View } from "react-native";
 import { Avatar, BackHeader, EmptyState, FixedScreen, LoadingState, StatusBadge, SurfaceCard } from "../src/components";
 import { theme } from "../src/theme";
+import { getEffectivePaymentStatus, paymentStatusNote } from "../src/utils/payments";
 
 export default function PaymentDetailScreen() {
   const params = useLocalSearchParams<{ paymentId?: string; mode?: string }>();
@@ -58,25 +59,36 @@ export default function PaymentDetailScreen() {
     );
   }
 
+  const effectiveStatus = getEffectivePaymentStatus(payment, booking);
+  const noPaymentRequired = effectiveStatus === "No payment required";
+
   return (
-    <FixedScreen header={<BackHeader title="Payment Details" onBack={() => router.back()} />}>
+    <FixedScreen header={<BackHeader title="Payment Receipt" onBack={() => router.back()} />}>
       <SurfaceCard style={{ padding: 0, overflow: "hidden" }}>
-        <View style={{ backgroundColor: theme.colors.primaryDark, padding: 20, gap: 14 }}>
+        <View style={{ backgroundColor: theme.dark ? theme.colors.primaryLight : theme.colors.primaryDark, padding: 20, gap: 14 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12 }}>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: "rgba(255,255,255,0.72)", fontWeight: "700", fontSize: 12 }}>Transaction</Text>
+              <Text style={{ color: "rgba(255,255,255,0.72)", fontWeight: "700", fontSize: 12 }}>{formatPaymentReference(payment)}</Text>
               <Text style={{ color: "#fff", fontSize: 25, fontWeight: "900", marginTop: 6 }}>
-                PHP {payment.amount.toLocaleString()}
+                {noPaymentRequired ? "No payment required" : `₱${payment.amount.toLocaleString()}`}
               </Text>
               <Text style={{ color: "rgba(255,255,255,0.78)", marginTop: 4 }}>
-                #{payment.bookingId.replace(/^booking-/, "")}
+                {booking ? formatBookingReference(booking) : formatBookingReference(payment.bookingId)}
+              </Text>
+              <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 12, marginTop: 4 }}>
+                Last updated {booking ? formatReadableDateTime(booking.updatedAt) : formatReadableDateTime(payment.createdAt)}
               </Text>
             </View>
-            <StatusBadge status={payment.status} />
+            <StatusBadge status={effectiveStatus} />
           </View>
         </View>
 
         <View style={{ padding: 18, gap: 14 }}>
+          <View style={{ borderRadius: 18, padding: 14, backgroundColor: theme.colors.surfaceAlt, gap: 8 }}>
+            <Text style={{ color: theme.colors.text, fontSize: 15, fontWeight: "900" }}>Payment status</Text>
+            <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>{paymentStatusNote(effectiveStatus)}</Text>
+          </View>
+
           <View style={{ flexDirection: "row", gap: 12 }}>
             <View style={{ flex: 1, gap: 10, borderRadius: 18, padding: 14, backgroundColor: theme.colors.surfaceAlt }}>
               <Text style={{ color: theme.colors.textLight, fontSize: 12, fontWeight: "700" }}>Customer</Text>
@@ -95,8 +107,12 @@ export default function PaymentDetailScreen() {
           </View>
 
           {[
+            { icon: "receipt-outline", label: "Receipt reference", value: formatPaymentReference(payment) },
+            { icon: "briefcase-outline", label: "Booking reference", value: booking ? formatBookingReference(booking) : formatBookingReference(payment.bookingId) },
             { icon: "card-outline", label: "Payment method", value: payment.method },
-            { icon: "time-outline", label: "Recorded at", value: payment.createdAt },
+            { icon: "checkmark-circle-outline", label: "Status", value: effectiveStatus },
+            { icon: "time-outline", label: "Recorded at", value: formatReadableDateTime(payment.createdAt) },
+            { icon: "refresh-outline", label: "Last updated", value: booking ? formatReadableDateTime(booking.updatedAt) : formatReadableDateTime(payment.createdAt) },
             { icon: "construct-outline", label: "Service", value: booking?.serviceName || "Service record" },
             { icon: "calendar-outline", label: "Scheduled", value: booking?.scheduledAt || "Not available" },
             { icon: "location-outline", label: "Location", value: booking?.address || booking?.location || "Not available" }
@@ -120,6 +136,28 @@ export default function PaymentDetailScreen() {
               </View>
             </View>
           ))}
+
+          <View style={{ borderRadius: 18, padding: 14, backgroundColor: theme.colors.surfaceAlt, gap: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <Text style={{ color: theme.colors.text, fontSize: 15, fontWeight: "900" }}>Cash confirmation</Text>
+              <Ionicons name="cash-outline" size={19} color={theme.colors.primaryDark} />
+            </View>
+            {[
+              {
+                label: "Provider confirmation",
+                value: effectiveStatus === "Paid" ? "Confirmed when the worker completed the job." : "Waiting for job completion."
+              },
+              {
+                label: "Customer confirmation",
+                value: effectiveStatus === "Paid" ? "Customer receipt acknowledgement can be added in the next proof flow." : "No customer cash confirmation yet."
+              }
+            ].map((item) => (
+              <View key={item.label} style={{ gap: 4 }}>
+                <Text style={{ color: theme.colors.textLight, fontSize: 12, fontWeight: "700" }}>{item.label}</Text>
+                <Text style={{ color: theme.colors.text, fontWeight: "800", lineHeight: 20 }}>{item.value}</Text>
+              </View>
+            ))}
+          </View>
         </View>
       </SurfaceCard>
     </FixedScreen>

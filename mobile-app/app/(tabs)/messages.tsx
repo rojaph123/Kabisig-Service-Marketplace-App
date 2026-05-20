@@ -1,13 +1,71 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { Pressable, Text, View } from "react-native";
+import { Animated, Easing, Modal, Platform, Pressable, Text, View } from "react-native";
 import { messagingService, userService, type Message, type MessageThread, type User } from "@kabisig/shared";
-import { AppHeader, Avatar, EmptyState, FeedbackBanner, FixedScreen, LoadingState, SearchBar, SurfaceCard } from "../../src/components";
+import { AppHeader, Avatar, EmptyState, FixedScreen, LoadingState, SearchBar, SurfaceCard } from "../../src/components";
 import { useAuth } from "../../src/hooks/AuthProvider";
 import { theme } from "../../src/theme";
 
 type InboxMode = "inbox" | "archived";
+
+function formatThreadTime(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const today = new Date();
+  const sameDay =
+    parsed.getFullYear() === today.getFullYear() &&
+    parsed.getMonth() === today.getMonth() &&
+    parsed.getDate() === today.getDate();
+
+  if (sameDay) {
+    return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  }
+
+  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function sortThreadsForUser(items: MessageThread[], userId: string) {
+  return [...items].sort((a, b) => {
+    const aPinned = a.pinnedFor?.includes(userId) ? 1 : 0;
+    const bPinned = b.pinnedFor?.includes(userId) ? 1 : 0;
+    if (aPinned !== bPinned) return bPinned - aPinned;
+    return b.updatedAt.localeCompare(a.updatedAt);
+  });
+}
+
+async function getThreadMessagesSafely(thread: MessageThread): Promise<Message[]> {
+  try {
+    return await messagingService.getThreadMessages(thread.threadId);
+  } catch (error) {
+    console.warn("Unable to load messages for thread:", thread.threadId, error);
+    return [];
+  }
+}
+
+async function loadUserWithProfilePhoto(userId: string): Promise<User | null> {
+  const userDoc = await userService.getUserDocument(userId);
+  if (!userDoc) return null;
+
+  if (userDoc.profilePhoto) {
+    return userDoc;
+  }
+
+  if (userDoc.role === "provider") {
+    const profile = await userService.getProviderProfile(userId).catch(() => null);
+    return {
+      ...userDoc,
+      fullName: profile?.displayName || userDoc.fullName,
+      profilePhoto: profile?.profilePhotoUrl || userDoc.profilePhoto || ""
+    };
+  }
+
+  const profile = await userService.getCustomerProfile(userId).catch(() => null);
+  return {
+    ...userDoc,
+    profilePhoto: profile?.profilePhotoUrl || userDoc.profilePhoto || ""
+  };
+}
 
 export default function MessagesTab() {
   const { user } = useAuth();
@@ -17,48 +75,70 @@ export default function MessagesTab() {
   const [unreadByThread, setUnreadByThread] = useState<Record<string, number>>({});
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [mode, setMode] = useState<InboxMode>("inbox");
   const [activeActionsThreadId, setActiveActionsThreadId] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<{ type: "success" | "error"; title: string; message: string } | null>(null);
+  const previewScale = useRef(new Animated.Value(0.96)).current;
+  const previewOpacity = useRef(new Animated.Value(0)).current;
+  const [selecting, setSelecting] = useState(false);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([]);
+  const [, setFeedback] = useState<{ type: "success" | "error"; title: string; message: string } | null>(null);
+
+  const hydrateThreads = useCallback(async (allThreads: MessageThread[]) => {
+    if (!user) return;
+    const chatmateIds = Array.from(
+      new Set(
+        allThreads
+          .flatMap((thread) => thread.participants)
+          .filter((participant) => participant !== user.id && participant !== "admin-support")
+      )
+    );
+
+    const [users, messagesPerThread] = await Promise.all([
+      Promise.all(chatmateIds.map(loadUserWithProfilePhoto)).then((items) => items.filter((entry): entry is User => Boolean(entry))),
+      Promise.all(allThreads.map(getThreadMessagesSafely))
+    ]);
+
+    const inboxItems = allThreads.filter((thread) => !thread.archivedFor?.includes(user.id));
+    const archivedItems = allThreads.filter((thread) => thread.archivedFor?.includes(user.id));
+    const unreadMap = Object.fromEntries(
+      allThreads.map((thread, index) => [
+        thread.threadId,
+        messagesPerThread[index].filter((message: Message) => message.senderId !== user.id && !message.readBy?.[user.id]).length
+      ])
+    );
+
+    setThreads(sortThreadsForUser(inboxItems, user.id));
+    setArchivedThreads(sortThreadsForUser(archivedItems, user.id));
+    setUsersById(Object.fromEntries(users.map((entry) => [entry.id, entry])));
+    setUnreadByThread(unreadMap);
+    setLoading(false);
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
     setLoading(true);
 
     const unsubscribe = messagingService.subscribeUserThreads(user.id, (allThreads) => {
-      void (async () => {
-        const chatmateIds = Array.from(
-          new Set(
-            allThreads
-              .flatMap((thread) => thread.participants)
-              .filter((participant) => participant !== user.id && participant !== "admin-support")
-          )
-        );
-
-        const [users, messagesPerThread] = await Promise.all([
-          userService.getUsersByIds(chatmateIds),
-          Promise.all(allThreads.map((thread) => messagingService.getThreadMessages(thread.threadId)))
-        ]);
-
-        const inboxItems = allThreads.filter((thread) => !thread.archivedFor?.includes(user.id));
-        const archivedItems = allThreads.filter((thread) => thread.archivedFor?.includes(user.id));
-        const unreadMap = Object.fromEntries(
-          allThreads.map((thread, index) => [
-            thread.threadId,
-            messagesPerThread[index].filter((message: Message) => message.senderId !== user.id && !message.readAt).length
-          ])
-        );
-
-        setThreads(inboxItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
-        setArchivedThreads(archivedItems.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
-        setUsersById(Object.fromEntries(users.map((entry) => [entry.id, entry])));
-        setUnreadByThread(unreadMap);
-        setLoading(false);
-      })();
+      void hydrateThreads(allThreads);
     });
 
     return unsubscribe;
-  }, [user]);
+  }, [hydrateThreads, user]);
+
+  const handleRefresh = useCallback(async () => {
+    if (!user) return;
+    setRefreshing(true);
+    try {
+      const [inboxItems, archivedItems] = await Promise.all([
+        messagingService.getUserThreads(user.id),
+        messagingService.getArchivedThreads(user.id)
+      ]);
+      await hydrateThreads([...inboxItems, ...archivedItems]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [hydrateThreads, user]);
 
   const visibleThreads = mode === "inbox" ? threads : archivedThreads;
 
@@ -70,15 +150,64 @@ export default function MessagesTab() {
       return !normalized || [thread.lastMessage, chatmateName].join(" ").toLowerCase().includes(normalized);
     });
   }, [search, visibleThreads, user?.id, usersById]);
+  const allFilteredSelected = filteredThreads.length > 0 && selectedThreadIds.length === filteredThreads.length;
+  const activeThread = useMemo(
+    () => [...threads, ...archivedThreads].find((thread) => thread.threadId === activeActionsThreadId) || null,
+    [activeActionsThreadId, archivedThreads, threads]
+  );
+  const activeChatmateId = activeThread?.participants.find((participant) => participant !== user?.id);
+  const activeSupportThread = Boolean(activeThread?.bookingId.startsWith("support-"));
+  const activeChatmateName = activeSupportThread
+    ? "Kabisig support"
+    : activeChatmateId
+      ? usersById[activeChatmateId]?.fullName || usersById[activeChatmateId]?.email || "Conversation"
+      : "Conversation";
+
+  useEffect(() => {
+    if (!activeActionsThreadId) {
+      previewScale.setValue(0.96);
+      previewOpacity.setValue(0);
+      return;
+    }
+    Animated.parallel([
+      Animated.timing(previewOpacity, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true
+      }),
+      Animated.spring(previewScale, {
+        toValue: 1,
+        damping: 14,
+        stiffness: 180,
+        mass: 0.8,
+        useNativeDriver: true
+      })
+    ]).start();
+  }, [activeActionsThreadId, previewOpacity, previewScale]);
+
+  function toggleThreadSelection(threadId: string) {
+    setSelectedThreadIds((current) =>
+      current.includes(threadId)
+        ? current.filter((item) => item !== threadId)
+        : [...current, threadId]
+    );
+  }
+
+  function cancelSelection() {
+    setSelecting(false);
+    setSelectedThreadIds([]);
+  }
 
   async function handleDelete(threadId: string) {
+    if (!user) return;
     try {
       await messagingService.deleteThread(threadId);
       setActiveActionsThreadId(null);
       setFeedback({
         type: "success",
         title: "Conversation deleted",
-        message: "The thread and its messages were removed from your inbox."
+        message: "The conversation and its message attachments were removed from storage."
       });
       // realtime listener will refresh the view automatically
     } catch (error) {
@@ -87,6 +216,46 @@ export default function MessagesTab() {
         type: "error",
         title: "Delete failed",
         message: "We could not delete this conversation right now."
+      });
+    }
+  }
+
+  async function handleDeleteSelected() {
+    if (!selectedThreadIds.length) return;
+    try {
+      await messagingService.deleteThreads(selectedThreadIds);
+      setFeedback({
+        type: "success",
+        title: "Conversations deleted",
+        message: "Selected conversations and their attachments were removed from storage."
+      });
+      cancelSelection();
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        title: "Delete failed",
+        message: "We could not delete the selected conversations right now."
+      });
+    }
+  }
+
+  async function handleMarkSelectedUnread() {
+    if (!user || !selectedThreadIds.length) return;
+    try {
+      await Promise.all(selectedThreadIds.map((threadId) => messagingService.markThreadAsUnread(threadId, user.id)));
+      setFeedback({
+        type: "success",
+        title: "Marked unread",
+        message: "Selected conversations are back in your unread queue."
+      });
+      cancelSelection();
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        title: "Unread update failed",
+        message: "We could not mark the selected conversations as unread."
       });
     }
   }
@@ -116,18 +285,48 @@ export default function MessagesTab() {
     }
   }
 
+  async function handlePin(threadId: string) {
+    if (!user) return;
+    const selectedThread = [...threads, ...archivedThreads].find((entry) => entry.threadId === threadId);
+    const isPinned = selectedThread?.pinnedFor?.includes(user.id);
+
+    try {
+      if (isPinned) {
+        await messagingService.unpinThread(threadId, user.id);
+      } else {
+        await messagingService.pinThread(threadId, user.id);
+      }
+      setActiveActionsThreadId(null);
+      setFeedback({
+        type: "success",
+        title: isPinned ? "Conversation unpinned" : "Conversation pinned",
+        message: isPinned ? "This chat will follow normal inbox order." : "This chat will stay at the top of your inbox."
+      });
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        title: "Pin failed",
+        message: "We could not update this conversation right now."
+      });
+    }
+  }
+
   return (
     <FixedScreen
+      safeAreaEdges={["top", "left", "right"]}
+      contentContainerStyle={{ paddingBottom: theme.spacing.xl }}
+      refreshing={refreshing}
+      onRefresh={() => void handleRefresh()}
       header={
         <>
           <AppHeader title="Messages" />
-          {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
         </>
       }
     >
 
-      <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt }}>
-        <View style={{ flexDirection: "row", gap: 10 }}>
+      <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt, marginBottom: -4, padding: 10 }}>
+        <View style={{ flexDirection: "row", gap: 8 }}>
           {[
             { key: "inbox" as const, label: "Inbox", count: threads.length },
             { key: "archived" as const, label: "Archive", count: archivedThreads.length }
@@ -139,21 +338,26 @@ export default function MessagesTab() {
                 onPress={() => {
                   setMode(item.key);
                   setActiveActionsThreadId(null);
+                  cancelSelection();
                 }}
                 style={{
                   flex: 1,
-                  borderRadius: 20,
-                  paddingVertical: 13,
+                  borderRadius: 13,
+                  paddingVertical: 8,
                   alignItems: "center",
                   backgroundColor: active ? theme.colors.primary : theme.colors.card,
                   borderWidth: 1,
                   borderColor: active ? theme.colors.primary : theme.colors.border,
-                  shadowColor: active ? theme.colors.primary : undefined,
-                  shadowOpacity: active ? 0.16 : 0,
-                  shadowRadius: active ? 10 : 0
+                  ...(Platform.OS === "web"
+                    ? { boxShadow: active ? "0 10px 22px rgba(37, 99, 235, 0.16)" : "none" }
+                    : {
+                        shadowColor: active ? theme.colors.primary : undefined,
+                        shadowOpacity: active ? 0.16 : 0,
+                        shadowRadius: active ? 10 : 0
+                      })
                 }}
               >
-                <Text style={{ color: active ? "#fff" : theme.colors.text, fontWeight: "800" }}>
+                <Text style={{ color: active ? "#fff" : theme.colors.text, fontWeight: "800", fontSize: 11 }}>
                   {item.label} ({item.count})
                 </Text>
               </Pressable>
@@ -162,11 +366,52 @@ export default function MessagesTab() {
         </View>
       </SurfaceCard>
 
-      <SearchBar placeholder="Search by name or message..." value={search} onChangeText={setSearch} />
+      <View style={{ marginTop: -4 }}>
+        <SearchBar placeholder="Search by name or message..." value={search} onChangeText={setSearch} />
+      </View>
+
+      {filteredThreads.length ? (
+        <SurfaceCard style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 8 }}>
+          {selecting ? (
+            <>
+              <Pressable
+                onPress={() => setSelectedThreadIds(allFilteredSelected ? [] : filteredThreads.map((thread) => thread.threadId))}
+                style={{ flex: 1, borderRadius: 12, paddingVertical: 9, alignItems: "center", backgroundColor: theme.colors.surfaceAlt }}
+              >
+                <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>{allFilteredSelected ? "Clear all" : "Select all"}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void handleMarkSelectedUnread()}
+                disabled={!selectedThreadIds.length}
+                style={{ flex: 1, borderRadius: 12, paddingVertical: 9, alignItems: "center", backgroundColor: selectedThreadIds.length ? theme.colors.primarySoft : theme.colors.surfaceAlt }}
+              >
+                <Text style={{ color: selectedThreadIds.length ? theme.colors.primaryDark : theme.colors.textLight, fontWeight: "800", fontSize: 12 }}>Unread</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void handleDeleteSelected()}
+                disabled={!selectedThreadIds.length}
+                style={{ flex: 1, borderRadius: 12, paddingVertical: 9, alignItems: "center", backgroundColor: selectedThreadIds.length ? theme.colors.dangerSoft : theme.colors.surfaceAlt }}
+              >
+                <Text style={{ color: selectedThreadIds.length ? theme.colors.danger : theme.colors.textLight, fontWeight: "800", fontSize: 12 }}>Delete</Text>
+              </Pressable>
+              <Pressable onPress={cancelSelection} style={{ borderRadius: 12, padding: 9, backgroundColor: theme.colors.surfaceAlt }}>
+                <Ionicons name="close-outline" size={18} color={theme.colors.text} />
+              </Pressable>
+            </>
+          ) : (
+            <Pressable
+              onPress={() => setSelecting(true)}
+              style={{ flex: 1, borderRadius: 12, paddingVertical: 9, alignItems: "center", backgroundColor: theme.colors.surfaceAlt }}
+            >
+              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>Select conversations</Text>
+            </Pressable>
+          )}
+        </SurfaceCard>
+      ) : null}
 
       {loading ? <LoadingState label="Loading conversations..." /> : null}
 
-      <View style={{ gap: 12 }}>
+      <View style={{ gap: 2 }}>
         {filteredThreads.map((thread) => {
           const supportThread = thread.bookingId.startsWith("support-");
           const chatmateId = thread.participants.find((participant) => participant !== user?.id);
@@ -176,88 +421,94 @@ export default function MessagesTab() {
               ? usersById[chatmateId]?.fullName || usersById[chatmateId]?.email || "Conversation"
               : "Conversation";
           const unreadCount = unreadByThread[thread.threadId] || 0;
-          const showActions = activeActionsThreadId === thread.threadId;
+          const isPinned = user ? thread.pinnedFor?.includes(user.id) : false;
+          const selected = selectedThreadIds.includes(thread.threadId);
 
           return (
-            <SurfaceCard
+            <Pressable
               key={thread.threadId}
+              onLongPress={() => {
+                setActiveActionsThreadId(thread.threadId);
+              }}
+              onPress={() => {
+                if (selecting) {
+                  toggleThreadSelection(thread.threadId);
+                  return;
+                }
+                router.push({
+                  pathname: "/chat",
+                  params: { threadId: thread.threadId, bookingId: thread.bookingId }
+                });
+              }}
               style={{
-                paddingVertical: 10,
-                paddingHorizontal: 12,
+                flexDirection: "row",
+                alignItems: "center",
                 gap: 12,
-                backgroundColor: theme.colors.card,
-                borderColor: theme.colors.border
+                borderRadius: 16,
+                paddingVertical: 8,
+                paddingHorizontal: 8,
+                backgroundColor: selected ? theme.colors.primarySoft : unreadCount ? theme.colors.surfaceAlt : "transparent"
               }}
             >
-              <Pressable
-                onLongPress={() => setActiveActionsThreadId((current) => (current === thread.threadId ? null : thread.threadId))}
-                onPress={() =>
-                  router.push({
-                    pathname: "/chat",
-                    params: { threadId: thread.threadId, bookingId: thread.bookingId }
-                  })
-                }
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                  borderRadius: 22,
-                  padding: 10,
-                  backgroundColor: unreadCount
-                    ? theme.dark
-                      ? theme.colors.surfaceAlt
-                      : theme.colors.surfaceAlt
-                    : theme.dark
-                      ? theme.colors.background
-                      : theme.colors.card
-                }}
-              >
-                <Avatar
-                  image={chatmateId ? usersById[chatmateId]?.profilePhoto : ""}
-                  size={54}
-                  icon={supportThread ? "help-buoy-outline" : "person-outline"}
-                  accentColor={supportThread ? theme.colors.accentDark : theme.colors.primaryDark}
-                />
+              {selecting ? (
+                <View style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: selected ? theme.colors.primary : theme.colors.border, backgroundColor: selected ? theme.colors.primary : theme.colors.card, alignItems: "center", justifyContent: "center" }}>
+                  {selected ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
+                </View>
+              ) : null}
+              <Avatar
+                image={chatmateId ? usersById[chatmateId]?.profilePhoto : ""}
+                size={48}
+                icon={supportThread ? "help-buoy-outline" : "person-outline"}
+                accentColor={supportThread ? theme.colors.accentDark : theme.colors.primaryDark}
+              />
 
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <Text style={{ color: theme.colors.text, fontWeight: unreadCount ? "900" : "800", fontSize: 16 }}>
-                      {chatmateName}
-                    </Text>
-                    <Text style={{ color: theme.colors.textLight, fontSize: 11 }}>{thread.updatedAt}</Text>
-                  </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
                   <Text
-                    style={{
-                      color: unreadCount ? theme.colors.text : theme.colors.textMuted,
-                      marginTop: 5,
-                      fontWeight: unreadCount ? "800" : "500"
-                    }}
-                    numberOfLines={2}
+                    style={{ color: theme.colors.text, fontWeight: unreadCount ? "900" : "800", fontSize: 15, flex: 1, minWidth: 0 }}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
                   >
-                    {thread.lastMessage || "No messages yet"}
+                    {chatmateName}
+                  </Text>
+                  {isPinned ? <Ionicons name="pin" size={13} color={theme.colors.primaryDark} style={{ flexShrink: 0 }} /> : null}
+                  <Text style={{ color: theme.colors.textLight, fontSize: 11, flexShrink: 0, maxWidth: 72, textAlign: "right" }} numberOfLines={1}>
+                    {formatThreadTime(thread.updatedAt)}
                   </Text>
                 </View>
+                <Text
+                  style={{
+                    color: unreadCount ? theme.colors.text : theme.colors.textMuted,
+                    marginTop: 3,
+                    fontSize: 13,
+                    fontWeight: unreadCount ? "800" : "500"
+                  }}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {thread.lastMessage || "No messages yet"}
+                </Text>
+              </View>
 
-                {unreadCount ? (
-                  <View
-                    style={{
-                      minWidth: 24,
-                      height: 24,
-                      borderRadius: 12,
-                      paddingHorizontal: 6,
-                      backgroundColor: theme.colors.accent,
-                      alignItems: "center",
-                      justifyContent: "center"
-                    }}
-                  >
-                    <Text style={{ color: "#fff", fontWeight: "900", fontSize: 12 }}>
-                      {unreadCount > 9 ? "9+" : unreadCount}
-                    </Text>
-                  </View>
-                ) : null}
-              </Pressable>
-
-            </SurfaceCard>
+              {unreadCount ? (
+                <View
+                  style={{
+                    minWidth: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    paddingHorizontal: 6,
+                    backgroundColor: theme.colors.accent,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0
+                  }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "900", fontSize: 11 }}>
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </Text>
+                </View>
+              ) : null}
+            </Pressable>
           );
         })}
 
@@ -272,60 +523,162 @@ export default function MessagesTab() {
           />
         ) : null}
       </View>
-      {activeActionsThreadId ? (
-        <View
+      <Modal visible={Boolean(activeActionsThreadId)} transparent animationType="fade" onRequestClose={() => setActiveActionsThreadId(null)}>
+        <Pressable
+          onPress={() => setActiveActionsThreadId(null)}
           style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            top: 0,
-            bottom: 0,
-            backgroundColor: "rgba(2,8,23,0.35)",
+            flex: 1,
+            backgroundColor: "rgba(2,8,23,0.42)",
             justifyContent: "center",
-            paddingHorizontal: theme.spacing.lg
+            alignItems: "center",
+            paddingHorizontal: 24
           }}
         >
-          <SurfaceCard style={{ gap: 12, backgroundColor: theme.colors.card, borderColor: theme.colors.border }}>
-            <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: "900" }}>Conversation options</Text>
-            <Text style={{ color: theme.colors.textMuted }}>
-              Choose what you want to do with this thread.
-            </Text>
+          <View style={{ width: "100%", alignItems: "center", gap: 10 }}>
+            <Animated.View style={{ width: "100%", maxWidth: 320, opacity: previewOpacity, transform: [{ scale: previewScale }] }}>
+              <Pressable
+                onPress={() => {
+                  if (!activeThread) return;
+                  setActiveActionsThreadId(null);
+                  router.push({
+                    pathname: "/chat",
+                    params: { threadId: activeThread.threadId, bookingId: activeThread.bookingId }
+                  });
+                }}
+              >
+                <SurfaceCard style={{ gap: 9, padding: 13, backgroundColor: theme.colors.card, borderColor: theme.colors.border }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                    <Avatar
+                      image={activeChatmateId ? usersById[activeChatmateId]?.profilePhoto : ""}
+                      size={46}
+                      icon={activeSupportThread ? "help-buoy-outline" : "person-outline"}
+                      accentColor={activeSupportThread ? theme.colors.accentDark : theme.colors.primaryDark}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={{ color: theme.colors.text, fontSize: 15, fontWeight: "900" }} numberOfLines={1}>
+                        {activeChatmateName}
+                      </Text>
+                      <Text style={{ color: theme.colors.textMuted, marginTop: 3, fontSize: 12, lineHeight: 17 }} numberOfLines={2}>
+                        {activeThread?.lastMessage || "No messages yet"}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={{ color: theme.colors.primaryDark, fontSize: 11, fontWeight: "800", textAlign: "center" }}>Tap preview to open conversation</Text>
+                </SurfaceCard>
+              </Pressable>
+            </Animated.View>
+
+            <Animated.View style={{ width: 238, opacity: previewOpacity, transform: [{ scale: previewScale }] }}>
+              <SurfaceCard style={{ padding: 8, gap: 6, backgroundColor: theme.colors.card, borderColor: theme.colors.border }}>
             <Pressable
-              onPress={() => void handleArchive(activeActionsThreadId)}
+              onPress={() => {
+                if (!activeActionsThreadId) return;
+                setSelecting(true);
+                setSelectedThreadIds([activeActionsThreadId]);
+                setActiveActionsThreadId(null);
+              }}
               style={{
-                borderRadius: 16,
-                paddingVertical: 14,
+                borderRadius: 12,
+                paddingVertical: 9,
+                paddingHorizontal: 10,
                 alignItems: "center",
                 backgroundColor: theme.colors.surfaceAlt,
                 flexDirection: "row",
-                justifyContent: "center",
-                gap: 10
+                gap: 8
               }}
             >
-              <Ionicons name={mode === "inbox" ? "archive-outline" : "refresh-outline"} size={18} color={theme.colors.text} />
-              <Text style={{ color: theme.colors.text, fontWeight: "800" }}>{mode === "inbox" ? "Archive" : "Restore"}</Text>
+              <Ionicons name="checkbox-outline" size={16} color={theme.colors.text} />
+              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>Select</Text>
             </Pressable>
             <Pressable
-              onPress={() => void handleDelete(activeActionsThreadId)}
+              onPress={() => {
+                if (!user || !activeActionsThreadId) return;
+                void messagingService.markThreadAsUnread(activeActionsThreadId, user.id).then(() => {
+                  setActiveActionsThreadId(null);
+                  setFeedback({ type: "success", title: "Marked unread", message: "This conversation is marked unread." });
+                });
+              }}
               style={{
-                borderRadius: 16,
-                paddingVertical: 14,
+                borderRadius: 12,
+                paddingVertical: 9,
+                paddingHorizontal: 10,
+                alignItems: "center",
+                backgroundColor: theme.colors.surfaceAlt,
+                flexDirection: "row",
+                gap: 8
+              }}
+            >
+              <Ionicons name="mail-unread-outline" size={16} color={theme.colors.text} />
+              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>Mark as unread</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!activeActionsThreadId) return;
+                void handlePin(activeActionsThreadId);
+              }}
+              style={{
+                borderRadius: 12,
+                paddingVertical: 9,
+                paddingHorizontal: 10,
+                alignItems: "center",
+                backgroundColor: theme.colors.surfaceAlt,
+                flexDirection: "row",
+                gap: 8
+              }}
+            >
+              <Ionicons
+                name={[...threads, ...archivedThreads].find((thread) => thread.threadId === activeActionsThreadId)?.pinnedFor?.includes(user?.id || "") ? "pin" : "pin-outline"}
+                size={16}
+                color={theme.colors.text}
+              />
+              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>
+                {[...threads, ...archivedThreads].find((thread) => thread.threadId === activeActionsThreadId)?.pinnedFor?.includes(user?.id || "") ? "Unpin" : "Pin"}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!activeActionsThreadId) return;
+                void handleArchive(activeActionsThreadId);
+              }}
+              style={{
+                borderRadius: 12,
+                paddingVertical: 9,
+                paddingHorizontal: 10,
+                alignItems: "center",
+                backgroundColor: theme.colors.surfaceAlt,
+                flexDirection: "row",
+                gap: 8
+              }}
+            >
+              <Ionicons name={mode === "inbox" ? "archive-outline" : "refresh-outline"} size={16} color={theme.colors.text} />
+              <Text style={{ color: theme.colors.text, fontWeight: "800", fontSize: 12 }}>{mode === "inbox" ? "Archive" : "Restore"}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!activeActionsThreadId) return;
+                void handleDelete(activeActionsThreadId);
+              }}
+              style={{
+                borderRadius: 12,
+                paddingVertical: 9,
+                paddingHorizontal: 10,
                 alignItems: "center",
                 backgroundColor: theme.colors.dangerSoft,
                 flexDirection: "row",
-                justifyContent: "center",
-                gap: 10
+                gap: 8
               }}
             >
-              <Ionicons name="trash-outline" size={18} color={theme.colors.danger} />
-              <Text style={{ color: theme.colors.danger, fontWeight: "800" }}>Delete</Text>
+              <Ionicons name="trash-outline" size={16} color={theme.colors.danger} />
+              <Text style={{ color: theme.colors.danger, fontWeight: "800", fontSize: 12 }}>Delete permanently</Text>
             </Pressable>
-            <Pressable onPress={() => setActiveActionsThreadId(null)} style={{ paddingVertical: 12, alignItems: "center" }}>
-              <Text style={{ color: theme.colors.textMuted, fontWeight: "800" }}>Cancel</Text>
+            <Pressable onPress={() => setActiveActionsThreadId(null)} style={{ paddingVertical: 8, alignItems: "center" }}>
+              <Text style={{ color: theme.colors.textMuted, fontWeight: "800", fontSize: 12 }}>Cancel</Text>
             </Pressable>
-          </SurfaceCard>
-        </View>
-      ) : null}
+              </SurfaceCard>
+            </Animated.View>
+          </View>
+        </Pressable>
+      </Modal>
     </FixedScreen>
   );
 }

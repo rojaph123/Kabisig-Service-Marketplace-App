@@ -1,7 +1,7 @@
 import type { BookingStatus, ComplaintStatus, PaymentStatus, ProviderApprovalStatus } from "@kabisig/shared";
 import { theme } from "../theme";
 
-export function getStatusColor(status: BookingStatus | PaymentStatus | ComplaintStatus | ProviderApprovalStatus) {
+export function getStatusColor(status: BookingStatus | PaymentStatus | ComplaintStatus | ProviderApprovalStatus | "No payment required") {
   if (status === "Approved") {
     return "#2563EB";
   }
@@ -17,6 +17,9 @@ export function getStatusColor(status: BookingStatus | PaymentStatus | Complaint
   if (status === "In Progress") {
     return "#4F46E5";
   }
+  if (status === "Waiting for Completion") {
+    return "#0EA5E9";
+  }
   if (status === "Pending" || status === "Pending Approval" || status === "Under Review") {
     return theme.colors.warning;
   }
@@ -25,6 +28,9 @@ export function getStatusColor(status: BookingStatus | PaymentStatus | Complaint
   }
   if (status === "Rejected" || status === "Cancelled" || status === "Failed" || status === "Closed") {
     return theme.colors.danger;
+  }
+  if (status === "No payment required") {
+    return theme.colors.textMuted;
   }
   return theme.colors.info;
 }

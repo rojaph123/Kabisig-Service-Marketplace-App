@@ -2,6 +2,7 @@ import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image, Pressable, Text, View } from "react-native";
 import { Screen } from "../../src/components";
+import { markWelcomeScreenSeen } from "../../src/utils/firstLaunch";
 
 const icon = require("../../assets/branding/icon.jpg");
 
@@ -55,7 +56,9 @@ export default function WelcomeScreen() {
 
         <View style={{ gap: 14 }}>
           <Pressable
-            onPress={() => router.push("/(auth)/role-selection")}
+            onPress={() => {
+              void markWelcomeScreenSeen().finally(() => router.replace("/(auth)/role-selection"));
+            }}
             style={{
               borderRadius: 22,
               paddingVertical: 18,

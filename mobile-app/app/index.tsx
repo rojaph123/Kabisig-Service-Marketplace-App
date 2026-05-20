@@ -1,11 +1,29 @@
 import { Redirect } from "expo-router";
+import { useEffect, useState } from "react";
+import { AppStartupSplash } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
+import { hasSeenWelcomeScreen } from "../src/utils/firstLaunch";
 
 export default function Index() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  const [welcomeSeen, setWelcomeSeen] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    void hasSeenWelcomeScreen().then((seen) => {
+      if (mounted) setWelcomeSeen(seen);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  if (loading || welcomeSeen === null) {
+    return <AppStartupSplash />;
+  }
 
   if (!user) {
-    return <Redirect href="/(auth)/welcome" />;
+    return <Redirect href={welcomeSeen ? "/(auth)/role-selection" : "/(auth)/welcome"} />;
   }
 
   if (user.role === "provider" && !user.onboardingCompleted) {
@@ -18,4 +36,3 @@ export default function Index() {
 
   return <Redirect href="/(tabs)/home" />;
 }
-

@@ -6,14 +6,19 @@ import {
   bookingService,
   categoryService,
   notificationService,
-  paymentService,
   providerService,
+  userService,
+  type CustomerProfile,
   type ServiceCategory
 } from "@kabisig/shared";
 import { BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, MapPreviewModal, MultiMediaPickerField, PrimaryButton, SearchBar, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { requestCurrentLocation } from "../src/services/location";
 import { theme } from "../src/theme";
+import { readableAppError } from "../src/utils/errors";
+import { googleMapsEmbedUrl, googleMapsExternalUrl } from "../src/utils/maps";
+import { formatProviderStartingRate } from "../src/utils/rates";
+import { getProviderResponseTimeLabel } from "../src/utils/responseTime";
 
 type ProviderCard = Awaited<ReturnType<typeof providerService.getApprovedProviders>>[number];
 
@@ -34,10 +39,13 @@ function buildTimeSlots(
   provider: ProviderCard | undefined,
   weekday: string,
   selectedDate: string,
-  reservedSlots: string[]
+  reservedSlots: string[],
+  allowSavedProviderFlexibleTime = false
 ) {
+  const dateException = provider?.scheduleExceptions?.find((item) => item.unavailable && item.date === selectedDate);
+  if (dateException) return [];
   const schedule = provider?.availability?.find((slot) => slot.day === weekday && slot.available);
-  if (!schedule) return [];
+  if (!schedule) return allowSavedProviderFlexibleTime ? ["Flexible time"] : [];
 
   const [startHour] = schedule.start.split(":").map(Number);
   const [endHour] = schedule.end.split(":").map(Number);
@@ -58,24 +66,6 @@ function buildTimeSlots(
   return slots;
 }
 
-function mapsUrl(address: string) {
-  const normalized = address.trim();
-  const coordsMatch = normalized.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
-  if (coordsMatch) {
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${Number(coordsMatch[3]) - 0.01}%2C${Number(coordsMatch[1]) - 0.01}%2C${Number(coordsMatch[3]) + 0.01}%2C${Number(coordsMatch[1]) + 0.01}&layer=mapnik&marker=${coordsMatch[1]}%2C${coordsMatch[3]}`;
-  }
-  return `https://www.openstreetmap.org/export/embed.html?search=${encodeURIComponent(normalized)}`;
-}
-
-function mapsExternalUrl(address: string) {
-  const normalized = address.trim();
-  const coordsMatch = normalized.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
-  if (coordsMatch) {
-    return `https://www.openstreetmap.org/?mlat=${coordsMatch[1]}&mlon=${coordsMatch[3]}#map=18/${coordsMatch[1]}/${coordsMatch[3]}`;
-  }
-  return `https://www.openstreetmap.org/search?query=${encodeURIComponent(normalized)}`;
-}
-
 export default function BookingRequestScreen() {
   const params = useLocalSearchParams<{ providerId?: string; categoryId?: string }>();
   const { user } = useAuth();
@@ -83,15 +73,18 @@ export default function BookingRequestScreen() {
   const compactGrid = width < 430;
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [providers, setProviders] = useState<ProviderCard[]>([]);
+  const [savedProviderIds, setSavedProviderIds] = useState<string[]>([]);
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfile | null>(null);
   const [providerQuery, setProviderQuery] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] = useState(params.categoryId || "");
   const [selectedProviderId, setSelectedProviderId] = useState(params.providerId || "");
-  const [address, setAddress] = useState("Malaybalay City, Bukidnon");
+  const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [preferredProvider, setPreferredProvider] = useState("");
   const [selectedDate, setSelectedDate] = useState(nextUpcomingDays()[0].key);
   const [selectedTime, setSelectedTime] = useState("");
   const [pinLocation, setPinLocation] = useState("");
+  const [locating, setLocating] = useState(false);
   const [damageMedia, setDamageMedia] = useState<string[]>([]);
   const [reservedSlots, setReservedSlots] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -100,32 +93,74 @@ export default function BookingRequestScreen() {
   const [popupError, setPopupError] = useState<string | null>(null);
   const [showMapPreview, setShowMapPreview] = useState(false);
   const lockedProvider = Boolean(params.providerId);
-  const lockedCategory = Boolean(params.categoryId);
 
   useEffect(() => {
+    let mounted = true;
+
     async function load() {
       const [nextCategories, nextProviders] = await Promise.all([
         categoryService.getAllCategories(),
         providerService.getApprovedProviders(20)
       ]);
+      const [nextSavedProviderIds, nextCustomerProfile] = user?.role === "customer"
+        ? await Promise.all([userService.getSavedProviderIds(user.id), userService.getCustomerProfile(user.id)])
+        : [[], null];
+      if (!mounted) return;
       setCategories(nextCategories.filter((category) => Boolean(category?.id)));
-      setProviders(nextProviders);
+      setSavedProviderIds(nextSavedProviderIds);
+      setCustomerProfile(nextCustomerProfile);
+      const savedProviders = nextSavedProviderIds.length
+        ? (await providerService.getAllProviderProfiles()).filter((provider) => {
+            const isSaved = nextSavedProviderIds.includes(provider.userId);
+            const isBookable = provider.isApproved && (!provider.moderation || provider.moderation.status === "active");
+            return isSaved && isBookable;
+          })
+        : [];
+      const lockedProviderProfile =
+        params.providerId && !nextProviders.some((provider) => provider.userId === params.providerId)
+          ? await userService.getProviderProfile(params.providerId)
+          : null;
+      const mergedProviders = [
+        ...nextProviders,
+        ...savedProviders.filter((savedProvider) => !nextProviders.some((provider) => provider.userId === savedProvider.userId)),
+        ...(lockedProviderProfile?.isApproved && (!lockedProviderProfile.moderation || lockedProviderProfile.moderation.status === "active")
+          ? [{ ...lockedProviderProfile, userId: params.providerId as string }]
+          : [])
+      ].filter((provider, index, list) => list.findIndex((item) => item.userId === provider.userId) === index);
+
+      setProviders(
+        mergedProviders.sort((a, b) => {
+          const aSaved = nextSavedProviderIds.includes(a.userId) ? 1 : 0;
+          const bSaved = nextSavedProviderIds.includes(b.userId) ? 1 : 0;
+          return bSaved - aSaved || (b.rating || 0) - (a.rating || 0);
+        })
+      );
 
       if (!selectedCategoryId && nextCategories.length) {
         setSelectedCategoryId(params.categoryId || nextCategories[0].id);
       }
 
-      if (!selectedProviderId && nextProviders.length) {
-        const initialProvider = params.providerId
-          ? nextProviders.find((provider) => provider.userId === params.providerId) ?? nextProviders[0]
-          : nextProviders[0];
-        setSelectedProviderId(initialProvider.userId);
-        setPreferredProvider(initialProvider.displayName);
+      if (params.providerId && !selectedProviderId) {
+        const initialProvider = mergedProviders.find((provider) => provider.userId === params.providerId);
+        if (initialProvider) {
+          setSelectedProviderId(initialProvider.userId);
+          setPreferredProvider(initialProvider.displayName);
+        }
       }
     }
 
-    void load();
-  }, [params.categoryId, params.providerId, selectedCategoryId, selectedProviderId]);
+    void load().catch((error) => {
+      if (!mounted) return;
+      console.warn("Unable to load booking request options:", error);
+      setCategories([]);
+      setSavedProviderIds([]);
+      setProviders([]);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [params.categoryId, params.providerId, selectedCategoryId, selectedProviderId, user?.id, user?.role]);
 
   const selectedCategory = categories.find((category) => category.id === selectedCategoryId) || null;
   const filteredProviders = useMemo(() => {
@@ -162,13 +197,26 @@ export default function BookingRequestScreen() {
   }, [categories, selectedProvider]);
 
   const providerHasSingleCategory = lockedProvider && providerCategoryOptions.length === 1;
+  const savedAddresses = useMemo(() => {
+    const all = [
+      customerProfile?.defaultLocation || "",
+      ...(customerProfile?.addresses || [])
+    ]
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    return all.filter((value, index) => all.findIndex((item) => item.toLowerCase() === value.toLowerCase()) === index);
+  }, [customerProfile?.addresses, customerProfile?.defaultLocation]);
 
   const dates = nextUpcomingDays();
   const selectedDateInfo = dates.find((item) => item.key === selectedDate) || dates[0];
+  const selectedDateException = selectedProvider?.scheduleExceptions?.find((item) => item.unavailable && item.date === selectedDate);
+  const selectedProviderIsSaved = Boolean(selectedProvider && savedProviderIds.includes(selectedProvider.userId));
   const availableSlots = useMemo(
-    () => buildTimeSlots(selectedProvider, selectedDateInfo.weekday, selectedDate, reservedSlots),
-    [reservedSlots, selectedDate, selectedDateInfo.weekday, selectedProvider]
+    () => buildTimeSlots(selectedProvider, selectedDateInfo.weekday, selectedDate, reservedSlots, selectedProviderIsSaved),
+    [reservedSlots, selectedDate, selectedDateInfo.weekday, selectedProvider, selectedProviderIsSaved]
   );
+  const canSubmitBooking = Boolean(user && selectedCategory && selectedProvider && selectedTime && address.trim());
 
   useEffect(() => {
     if (!selectedProviderId || !selectedDate) {
@@ -184,12 +232,11 @@ export default function BookingRequestScreen() {
   }, [selectedDate, selectedProviderId]);
 
   useEffect(() => {
-    if (filteredProviders.length && !filteredProviders.some((provider) => provider.userId === selectedProviderId)) {
-      const nextProvider = filteredProviders[0];
-      setSelectedProviderId(nextProvider.userId);
-      setPreferredProvider(nextProvider.displayName);
+    if (!lockedProvider && selectedProviderId && filteredProviders.length && !filteredProviders.some((provider) => provider.userId === selectedProviderId)) {
+      setSelectedProviderId("");
+      setPreferredProvider("");
     }
-  }, [filteredProviders, selectedProviderId]);
+  }, [filteredProviders, lockedProvider, selectedProviderId]);
 
   useEffect(() => {
     if (availableSlots.length && !availableSlots.includes(selectedTime)) {
@@ -215,24 +262,34 @@ export default function BookingRequestScreen() {
   }, [lockedProvider, providerCategoryOptions, selectedCategoryId, selectedProvider]);
 
   async function autofillLocation() {
-    const location = await requestCurrentLocation();
-    if (!location.granted) {
+    if (locating) return;
+    setLocating(true);
+    try {
+      const location = await requestCurrentLocation();
+      if (!location.granted) {
+        setFeedback({
+          type: "error",
+          title: "Location permission needed",
+          message: "Please allow location access only if you want Kabisig to save an exact GPS pin for the worker. You still need to type the complete address."
+        });
+        return;
+      }
+      setPinLocation(location.label);
+      setFeedback({
+        type: "success",
+        title: "Location captured",
+        message: "Your GPS pin is ready. Please still type the complete address for the provider."
+      });
+    } catch (error) {
+      console.warn("Unable to capture booking GPS location:", error);
       setFeedback({
         type: "error",
-        title: "Location permission needed",
-        message: "Please allow location access so we can autofill your booking address."
+        title: "Location unavailable",
+        message: readableAppError(error, "We could not get your current location right now. Please try again.")
       });
-      return;
+    } finally {
+      setLocating(false);
     }
-    setPinLocation(location.label);
-    if (!address.trim() || address === "Malaybalay City, Bukidnon") {
-      setAddress("Current pinned location");
-    }
-    setFeedback({
-      type: "success",
-      title: "Location captured",
-      message: "Your GPS pin is ready. You can still type the complete address for the provider."
-    });
   }
 
   async function handleSubmit() {
@@ -241,7 +298,7 @@ export default function BookingRequestScreen() {
       setFeedback({
         type: "error",
         title: "Missing booking details",
-        message: "Please choose a provider, date, and available time slot before submitting."
+        message: "Please choose a worker, date, and available time slot before submitting."
       });
       return;
     }
@@ -272,16 +329,6 @@ export default function BookingRequestScreen() {
         updatedAt: new Date().toISOString()
       });
 
-      await paymentService.createPayment({
-        bookingId,
-        customerId: user.id,
-        providerId: selectedProvider.userId,
-        amount: Number(selectedCategory.startingPrice || 0),
-        method: "Cash on Service",
-        status: "Pending",
-        createdAt: new Date().toISOString()
-      });
-
       await notificationService.createNotification({
         userId: user.id,
         type: "booking_created",
@@ -289,16 +336,6 @@ export default function BookingRequestScreen() {
         body: `Your ${serviceName.toLowerCase()} request was sent to ${preferredName}.`,
         isRead: false,
         route: "/(tabs)/bookings",
-        createdAt: new Date().toISOString()
-      });
-
-      await notificationService.createNotification({
-        userId: user.id,
-        type: "payment_pending",
-        title: "Payment pending",
-        body: `A pending payment record was created for ${serviceName.toLowerCase()}.`,
-        isRead: false,
-        route: "/(tabs)/payments",
         createdAt: new Date().toISOString()
       });
 
@@ -325,7 +362,7 @@ export default function BookingRequestScreen() {
       }, 1200);
     } catch (error) {
       console.error("Booking error:", error);
-      const message = error instanceof Error ? error.message : "We couldn't submit your request right now. Please try another slot or try again in a moment.";
+      const message = readableAppError(error, "We couldn't submit your request right now. Please try another slot or try again in a moment.");
       setPopupError(message);
       setFeedback({
         type: "error",
@@ -345,7 +382,7 @@ export default function BookingRequestScreen() {
         <PrimaryButton
           label={submitting ? "Submitting request..." : "Submit booking request"}
           onPress={() => void handleSubmit()}
-          disabled={submitting}
+          disabled={submitting || !canSubmitBooking}
         />
       }
     >
@@ -363,6 +400,13 @@ export default function BookingRequestScreen() {
         message="Your request was sent to the provider and saved to your bookings."
       />
       <FullScreenPopup
+        visible={locating}
+        tone="info"
+        icon="navigate-circle"
+        title="Finding your location"
+        message="Please wait while we request permission and capture your current GPS pin for the worker."
+      />
+      <FullScreenPopup
         visible={!!popupError}
         tone="error"
         icon="alert-circle"
@@ -375,9 +419,9 @@ export default function BookingRequestScreen() {
         visible={showMapPreview}
         title="Booking location preview"
         subtitle={pinLocation || address}
-        mapUrl={mapsUrl(pinLocation || address)}
+        mapUrl={googleMapsEmbedUrl(pinLocation || address)}
         onClose={() => setShowMapPreview(false)}
-        onOpenExternal={() => void Linking.openURL(mapsExternalUrl(pinLocation || address))}
+        onOpenExternal={() => void Linking.openURL(googleMapsExternalUrl(pinLocation || address))}
       />
 
       <SurfaceCard>
@@ -412,7 +456,7 @@ export default function BookingRequestScreen() {
       </SurfaceCard>
 
       <SurfaceCard>
-        <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>{lockedProvider ? "Selected provider" : "Preferred provider"}<Text style={{ color: theme.colors.danger }}> *</Text></Text>
+        <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>{lockedProvider ? "Selected worker" : "Choose worker"}<Text style={{ color: theme.colors.danger }}> *</Text></Text>
         {!lockedProvider ? <SearchBar placeholder="Search provider..." value={providerQuery} onChangeText={setProviderQuery} /> : null}
         <View style={{ marginTop: 12, gap: 10 }}>
           {(lockedProvider && selectedProvider ? [selectedProvider] : filteredProviders).map((provider) => (
@@ -437,10 +481,36 @@ export default function BookingRequestScreen() {
                   <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
                     {provider.serviceCategories.join(", ") || "General services"} - {provider.city || "Location pending"}
                   </Text>
+                  <Text style={{ color: theme.colors.textLight, marginTop: 4, lineHeight: 18 }}>
+                    Service areas: {provider.serviceAreas?.length ? provider.serviceAreas.join(", ") : "Not listed yet"}
+                  </Text>
+                  {savedProviderIds.includes(provider.userId) ? (
+                    <Text style={{ color: theme.colors.primary, marginTop: 4, fontWeight: "800" }}>Saved provider</Text>
+                  ) : null}
                 </View>
                 <Text style={{ color: theme.colors.accent, fontWeight: "800" }}>
                   ★ {provider.rating?.toFixed(1) || "New"}
                 </Text>
+              </View>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                {[
+                  `${provider.rating ? provider.rating.toFixed(1) : "New"} rating`,
+                  `${provider.portfolio?.length || 0} completed jobs`,
+                  formatProviderStartingRate(provider, categories),
+                  getProviderResponseTimeLabel(provider)
+                ].map((item) => (
+                  <View
+                    key={`${provider.userId}-${item}`}
+                    style={{
+                      borderRadius: 999,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      backgroundColor: theme.colors.surfaceAlt
+                    }}
+                  >
+                    <Text style={{ color: theme.colors.text, fontWeight: "700", fontSize: 12 }}>{item}</Text>
+                  </View>
+                ))}
               </View>
             </Pressable>
           ))}
@@ -450,12 +520,55 @@ export default function BookingRequestScreen() {
       <SurfaceCard>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
           <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>Location<Text style={{ color: theme.colors.danger }}> *</Text></Text>
-          <Pressable onPress={() => void autofillLocation()}>
-            <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>Use GPS</Text>
+          <Pressable onPress={() => void autofillLocation()} disabled={locating}>
+            <Text style={{ color: theme.colors.primary, fontWeight: "800", opacity: locating ? 0.55 : 1 }}>
+              {locating ? "Locating..." : "Use GPS"}
+            </Text>
           </Pressable>
         </View>
         <View style={{ marginTop: 12 }}>
-          <FormInput label="Service address" value={address} onChangeText={setAddress} placeholder="Booking location" required error={!address.trim() && !!popupError} />
+          <FormInput
+            label="Service address"
+            value={address}
+            onChangeText={setAddress}
+            placeholder="Booking location"
+            required
+            error={!address.trim() && !!popupError}
+            helper="Enter the complete readable address first. This is what the worker will read before using the optional map pin."
+          />
+          {savedAddresses.length ? (
+            <View style={{ marginTop: 10, gap: 8 }}>
+              <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: "800" }}>Saved addresses</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {savedAddresses.slice(0, 4).map((savedAddress) => (
+                  <Pressable
+                    key={savedAddress}
+                    onPress={() => setAddress(savedAddress)}
+                    style={{
+                      borderRadius: 16,
+                      paddingHorizontal: 12,
+                      paddingVertical: 9,
+                      backgroundColor: address.trim().toLowerCase() === savedAddress.toLowerCase() ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                      borderWidth: 1,
+                      borderColor: address.trim().toLowerCase() === savedAddress.toLowerCase() ? theme.colors.primary : theme.colors.border
+                    }}
+                  >
+                    <Text style={{ color: theme.colors.text, fontWeight: "700", fontSize: 12 }} numberOfLines={1}>
+                      {savedAddress}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
+          {pinLocation ? (
+            <View style={{ marginTop: 10, flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />
+              <Text style={{ color: theme.colors.success, fontWeight: "800", flex: 1 }}>
+                GPS pin is active for this booking. Keep the complete address as the main location.
+              </Text>
+            </View>
+          ) : null}
         </View>
         <Pressable
           onPress={() => setShowMapPreview(true)}
@@ -474,12 +587,15 @@ export default function BookingRequestScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Map preview</Text>
-              <Text style={{ color: theme.colors.textMuted }} numberOfLines={2}>
+              <Text style={{ color: theme.colors.textMuted }}>
                 {pinLocation ? `${address} • Exact GPS pin ready` : address}
               </Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={18} color={theme.colors.primaryDark} />
           </View>
+          <Text style={{ color: theme.colors.textLight, fontSize: 12, marginTop: 8, lineHeight: 17 }}>
+            Why we need this: the GPS pin helps the worker navigate to the exact place, but it is only used when you tap Use GPS.
+          </Text>
         </Pressable>
       </SurfaceCard>
 
@@ -488,7 +604,9 @@ export default function BookingRequestScreen() {
         <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>Dates are shown in a calendar-style board and reflect provider availability.</Text>
         <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {dates.map((day) => {
-            const canSelect = Boolean(selectedProvider?.availability.some((slot) => slot.day === day.weekday && slot.available));
+            const hasAvailability = Boolean(selectedProvider?.availability.some((slot) => slot.day === day.weekday && slot.available));
+            const blockedByException = Boolean(selectedProvider?.scheduleExceptions?.some((item) => item.unavailable && item.date === day.key));
+            const canSelect = hasAvailability || (selectedProviderIsSaved && !blockedByException);
             const active = selectedDate === day.key;
             return (
               <Pressable
@@ -501,7 +619,7 @@ export default function BookingRequestScreen() {
                   borderRadius: 20,
                   paddingVertical: 12,
                   alignItems: "center",
-                  backgroundColor: active ? theme.colors.primary : canSelect ? theme.colors.surfaceAlt : "#ECEFF3",
+                  backgroundColor: active ? theme.colors.primary : canSelect ? theme.colors.surfaceAlt : theme.dark ? theme.colors.card : "#ECEFF3",
                   borderWidth: 1,
                   borderColor: active ? theme.colors.primary : theme.colors.border,
                   opacity: canSelect ? 1 : 0.48
@@ -519,8 +637,16 @@ export default function BookingRequestScreen() {
       <SurfaceCard>
         <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>Available time slots<Text style={{ color: theme.colors.danger }}> *</Text></Text>
         <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
-          We only show schedules that are currently marked available and not already reserved by another booking.
+          Saved workers can still receive a flexible booking request even when they are offline.
         </Text>
+        {selectedDateException ? (
+          <View style={{ marginTop: 12, borderRadius: 16, padding: 12, backgroundColor: theme.dark ? theme.colors.warningSoft : "#FFF4E5", borderWidth: 1, borderColor: theme.colors.warning }}>
+            <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Provider unavailable on this date</Text>
+            <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
+              {selectedDateException.reason || "This date was blocked by the provider, so no booking times are available."}
+            </Text>
+          </View>
+        ) : null}
         <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {availableSlots.length ? (
             availableSlots.map((slot) => (
@@ -543,7 +669,7 @@ export default function BookingRequestScreen() {
             ))
           ) : (
             <Text style={{ color: theme.colors.textMuted }}>
-              No valid slots are available for the selected provider on this date yet. The provider may already be busy working on another booking.
+              No valid slots are available for the selected provider on this date yet. Save this worker as a favorite to request a flexible booking while they are offline.
             </Text>
           )}
         </View>
@@ -562,13 +688,13 @@ export default function BookingRequestScreen() {
         label="Damage photos or videos"
         values={damageMedia}
         onChange={setDamageMedia}
-        helper="Attach as many photos or videos as needed so the provider can inspect the issue before visiting."
+        helper="Why we need this: photos or videos help the provider inspect the issue before visiting and prepare the right tools. Camera/gallery access is requested only when you add media."
       />
 
       <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt }}>
         <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: "700" }}>Estimated service fee</Text>
         <Text style={{ color: theme.colors.text, fontSize: 26, fontWeight: "900", marginTop: 6 }}>
-          PHP {Number(selectedCategory?.startingPrice || 0).toLocaleString()}
+          ₱{Number(selectedCategory?.startingPrice || 0).toLocaleString()}
         </Text>
       </SurfaceCard>
 

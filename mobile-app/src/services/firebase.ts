@@ -56,10 +56,14 @@ function createFirebaseAuth(): Auth {
       return authReactNative.initializeAuth(firebaseApp, {
         persistence: authReactNative.getReactNativePersistence(ReactNativeAsyncStorage),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && !error.message.includes("already-initialized")) {
+        console.warn("Firebase Auth persistence setup fell back to existing auth:", error.message);
+      }
       return authReactNative.getAuth(firebaseApp);
     }
-  } catch {
+  } catch (error) {
+    console.warn("Firebase Auth is using default persistence because AsyncStorage persistence was unavailable.", error);
     return getAuth(firebaseApp);
   }
 }
@@ -68,7 +72,8 @@ export const firebaseAuth = createFirebaseAuth();
 export const firestore = getFirestore(firebaseApp);
 
 export const googleSignInConfig = {
-  expoClientId: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID || "",
+  expoClientId: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "",
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID || "",
   iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || "",
   androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || ""
 };

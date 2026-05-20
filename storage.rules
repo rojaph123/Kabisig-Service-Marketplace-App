@@ -22,7 +22,16 @@ service firebase.storage {
       allow write: if hasRole("admin") || isOwner(userId);
     }
 
+    match /providerPortfolio/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasRole("admin") || isOwner(userId);
+    }
+
     match /bookings/{bookingId}/{allPaths=**} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /communityPosts/{postId}/{allPaths=**} {
       allow read, write: if isSignedIn();
     }
 

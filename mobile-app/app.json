@@ -2,11 +2,11 @@
   "expo": {
     "name": "Kabisig",
     "slug": "kabisig-mobile",
-    "scheme": "kabisig",
+    "scheme": "com.rov_japheth.kabisigmobile",
     "orientation": "portrait",
-    "icon": "./assets/branding/icon.jpg",
+    "icon": "./assets/branding/icon.png",
     "splash": {
-      "image": "./assets/branding/logo-with-tagline.jpg",
+      "image": "./assets/branding/logo-with-tagline.png",
       "resizeMode": "contain",
       "backgroundColor": "#1C93E3"
     },
@@ -14,15 +14,32 @@
       "**/*"
     ],
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Kabisig uses your location only when you choose to autofill a booking address or save your profile location."
+        }
+      ],
+      "expo-notifications",
+      "@react-native-google-signin/google-signin"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
+      "router": {},
       "eas": {
-        "projectId": "kabisig-expo-project"
+        "projectId": "7438bb5d-b60e-4329-b042-6db8e90e62fc"
       }
+    },
+    "owner": "rov_japheth",
+    "android": {
+      "package": "com.rov_japheth.kabisigmobile"
     }
   }
 }

@@ -1,0 +1,11 @@
+{
+  "scheme": "com.rov_japheth.kabisigmobile",
+  "android": {
+    "package": "com.rov_japheth.kabisigmobile"
+  },
+  "extra": {
+    "eas": {
+      "projectId": "efaff336-0e5b-40b0-a8b2-8c33b2c5d123"
+    }
+  }
+}

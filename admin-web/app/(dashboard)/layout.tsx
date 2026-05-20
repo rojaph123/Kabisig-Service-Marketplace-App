@@ -1,5 +1,6 @@
 "use client";
 
+import { marketplaceConfigService } from "@kabisig/shared";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect } from "react";
@@ -7,17 +8,23 @@ import { Sidebar } from "../../components/ui";
 import { useAdminAuth } from "../../lib/auth-context";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
-  const { admin } = useAdminAuth();
+  const { admin, loading } = useAdminAuth();
   const pathname = usePathname();
   const router = useRouter();
 
   useEffect(() => {
+    if (loading) return;
     if (!admin && pathname !== "/login") {
       router.replace("/login");
     }
-  }, [admin, pathname, router]);
+  }, [admin, loading, pathname, router]);
 
-  if (!admin) {
+  useEffect(() => {
+    if (!admin) return;
+    void marketplaceConfigService.ensureDefaultMarketplaceData();
+  }, [admin]);
+
+  if (loading || !admin) {
     return null;
   }
 

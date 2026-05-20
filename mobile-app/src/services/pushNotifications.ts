@@ -14,6 +14,7 @@ function getNotificationsModule(): NotificationsModule | null {
   }
 
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require("expo-notifications") as NotificationsModule;
   } catch {
     return null;
@@ -42,17 +43,27 @@ function isExpoGoRuntime() {
 }
 
 export function canUseAnyNotifications() {
-  return Platform.OS !== "web";
+  return Platform.OS !== "web" && !isExpoGoRuntime();
 }
 
 export function canUseRemotePushNotifications() {
-  return canUseAnyNotifications() && !isExpoGoRuntime();
+  return canUseAnyNotifications();
 }
 
 export async function requestNotificationPermission() {
   const Notifications = getNotificationsModule();
   if (!Notifications) {
     return { granted: false };
+  }
+
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "Kabisig alerts",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#1C93E3",
+      sound: "default",
+    });
   }
 
   const currentPermission = await Notifications.getPermissionsAsync();
@@ -74,6 +85,7 @@ export async function scheduleForegroundNotification(title: string, body: string
       title,
       body,
       sound: true,
+      ...(Platform.OS === "android" ? { channelId: "default" } : {}),
     },
     trigger: null,
   });

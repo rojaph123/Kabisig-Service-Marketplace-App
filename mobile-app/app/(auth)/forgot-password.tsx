@@ -57,7 +57,7 @@ export default function ForgotPasswordScreen() {
       </View>
 
       <SurfaceCard style={{ padding: 0, overflow: "hidden" }}>
-        <View style={{ backgroundColor: theme.colors.primaryDark, padding: 24, gap: 10 }}>
+        <View style={{ backgroundColor: theme.dark ? theme.colors.primaryLight : theme.colors.primaryDark, padding: 24, gap: 10 }}>
           <Text style={{ color: "rgba(255,255,255,0.76)", fontWeight: "700", letterSpacing: 0.8 }}>ACCOUNT RECOVERY</Text>
           <Text style={{ color: "#fff", fontSize: 30, fontWeight: "900" }}>
             Reset your password

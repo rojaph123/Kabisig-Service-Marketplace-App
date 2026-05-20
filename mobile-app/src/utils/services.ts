@@ -8,12 +8,14 @@ type ServiceVisual = {
 };
 
 const serviceVisuals: { match: RegExp; visual: ServiceVisual }[] = [
+  { match: /aircon|air con|air conditioner|a\/c|cooling/i, visual: { icon: "snow-outline", tint: "#0284C7", bg: "#E0F2FE" } },
   { match: /car mechanic|auto mechanic|car repair|auto repair/i, visual: { icon: "car-sport-outline", tint: "#DC2626", bg: "#FEE2E2" } },
   { match: /motor mechanic|motorcycle|motorbike|bike repair/i, visual: { icon: "bicycle-outline", tint: "#0F766E", bg: "#DCFCE7" } },
   { match: /electric|electrical|wiring/i, visual: { icon: "flash-outline", tint: "#2563EB", bg: "#EAF2FF" } },
   { match: /plumb|pipe|water/i, visual: { icon: "water-outline", tint: "#0891B2", bg: "#E8FAFE" } },
   { match: /weld|metal|fabricat/i, visual: { icon: "flame-outline", tint: "#EA580C", bg: "#FFF1E8" } },
-  { match: /construct|mason|build/i, visual: { icon: "hammer-outline", tint: "#CA8A04", bg: "#FFF8DB" } },
+  { match: /carpenter|carpentry|wood|cabinet|door|fixture|construct|mason|build/i, visual: { icon: "hammer-outline", tint: "#B45309", bg: "#FEF3C7" } },
+  { match: /tile|grout|floor|wall/i, visual: { icon: "grid-outline", tint: "#64748B", bg: "#F1F5F9" } },
   { match: /roof/i, visual: { icon: "home-outline", tint: "#16A34A", bg: "#E9F9EE" } },
   { match: /paint/i, visual: { icon: "color-palette-outline", tint: "#7C3AED", bg: "#F4E8FF" } },
   { match: /clean/i, visual: { icon: "sparkles-outline", tint: "#0F766E", bg: "#E6FFFB" } },

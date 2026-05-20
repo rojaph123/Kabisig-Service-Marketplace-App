@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { messagingService, notificationService, userService, type Message, type MessageThread, type User } from "@kabisig/shared";
-import { Avatar, BackHeader, EmptyState, FeedbackBanner, LoadingState, MediaPreviewModal, SurfaceCard } from "../src/components";
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { mediaService, messagingService, notificationService, userService, type MediaAttachment, type Message, type MessageThread, type User } from "@kabisig/shared";
+import { Avatar, EmptyState, FeedbackBanner, LoadingState, MediaPreviewModal } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
+import { readableAppError } from "../src/utils/errors";
 
 function firstParam(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
@@ -71,27 +72,78 @@ async function pickMediaFiles(existingValues: string[]) {
   });
 }
 
-function formatMessageTime(value: string) {
+function formatBubbleTime(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     return value;
   }
-  return parsed.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
+  return parsed.toLocaleTimeString("en-US", {
     hour: "numeric",
-    minute: "2-digit"
+    minute: "2-digit",
+    hour12: true
   });
+}
+
+function messageDateKey(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toDateString();
+}
+
+function formatDateDivider(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (parsed.toDateString() === today.toDateString()) return "Today";
+  if (parsed.toDateString() === yesterday.toDateString()) return "Yesterday";
+
+  return parsed.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: parsed.getFullYear() === today.getFullYear() ? undefined : "numeric"
+  });
+}
+
+async function loadUserWithProfilePhoto(userId: string): Promise<User | null> {
+  const userDoc = await userService.getUserDocument(userId);
+  if (!userDoc) return null;
+
+  if (userDoc.profilePhoto) {
+    return userDoc;
+  }
+
+  if (userDoc.role === "provider") {
+    const profile = await userService.getProviderProfile(userId).catch(() => null);
+    return {
+      ...userDoc,
+      fullName: profile?.displayName || userDoc.fullName,
+      profilePhoto: profile?.profilePhotoUrl || userDoc.profilePhoto || ""
+    };
+  }
+
+  const profile = await userService.getCustomerProfile(userId).catch(() => null);
+  return {
+    ...userDoc,
+    profilePhoto: profile?.profilePhotoUrl || userDoc.profilePhoto || ""
+  };
 }
 
 export default function ChatScreen() {
   const params = useLocalSearchParams<{ threadId?: string | string[]; bookingId?: string | string[]; otherId?: string | string[] }>();
   const { user } = useAuth();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const keyboardOffset = Platform.OS === "ios" ? Math.max(insets.top, 12) : 0;
   const [threadId, setThreadId] = useState<string | null>(firstParam(params.threadId) ?? null);
   const [thread, setThread] = useState<MessageThread | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
-  const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<MediaAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [otherUser, setOtherUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -103,6 +155,9 @@ export default function ChatScreen() {
   const ownBubbleBorder = theme.dark ? theme.colors.accentDark : "#B5D3FF";
   const ownBubbleText = theme.dark ? "#FFFFFF" : theme.colors.text;
   const ownMetaText = theme.dark ? "rgba(255,255,255,0.74)" : theme.colors.textMuted;
+  const bubbleMaxWidth = Math.min(width * 0.74, 330);
+  const incomingBubbleMaxWidth = Math.min(width * 0.66, 300);
+  const isPinned = user && thread ? thread.pinnedFor?.includes(user.id) : false;
 
   const loadThread = useCallback(async () => {
     if (!user) return;
@@ -135,7 +190,7 @@ export default function ChatScreen() {
         null;
 
       if (resolvedOtherId) {
-        const otherDoc = await userService.getUserDocument(resolvedOtherId);
+        const otherDoc = await loadUserWithProfilePhoto(resolvedOtherId);
         setOtherUser(otherDoc);
       } else {
         setOtherUser(null);
@@ -155,7 +210,7 @@ export default function ChatScreen() {
     }, [loadThread])
   );
 
-  const canSend = useMemo(() => Boolean(threadId && user && !sending && (draft.trim() || attachments.length)), [attachments.length, draft, sending, threadId, user]);
+  const canSend = useMemo(() => Boolean(threadId && user && !sending && !uploadingAttachment && (draft.trim() || attachments.length)), [attachments.length, draft, sending, threadId, uploadingAttachment, user]);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -206,16 +261,69 @@ export default function ChatScreen() {
       setFeedback({
         type: "error",
         title: "Message not sent",
-        message: "We could not send your message right now."
+        message: readableAppError(error, "We could not send your message right now.")
       });
     } finally {
       setSending(false);
     }
   }
 
+  async function handlePickPhotos() {
+    if (!threadId || !user || uploadingAttachment) return;
+    setUploadingAttachment(true);
+    setFeedback({
+      type: "info",
+      title: "Uploading photo",
+      message: "Your photo is being prepared while you type."
+    });
+    try {
+      const picked = await pickMediaFiles([]);
+      if (!picked.length) {
+        setFeedback(null);
+        return;
+      }
+      const uploaded = await mediaService.uploadMany(picked, `messageDrafts/${threadId}/${user.id}`, user.id);
+      setAttachments((current) => [...current, ...uploaded]);
+      setFeedback(null);
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        title: "Photo upload failed",
+        message: readableAppError(error, "We could not upload this photo right now.")
+      });
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+
+  async function handlePinToggle() {
+    if (!threadId || !user) return;
+    try {
+      if (isPinned) {
+        await messagingService.unpinThread(threadId, user.id);
+        setThread((current) =>
+          current ? { ...current, pinnedFor: (current.pinnedFor ?? []).filter((entry) => entry !== user.id) } : current
+        );
+      } else {
+        await messagingService.pinThread(threadId, user.id);
+        setThread((current) =>
+          current ? { ...current, pinnedFor: Array.from(new Set([...(current.pinnedFor ?? []), user.id])) } : current
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        title: "Pin failed",
+        message: readableAppError(error, "We could not update this conversation right now.")
+      });
+    }
+  }
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={keyboardOffset}>
         <View style={{ flex: 1 }}>
           <MediaPreviewModal visible={!!previewUri} uri={previewUri} title="Message Attachment" onClose={() => setPreviewUri(null)} />
           <View
@@ -242,21 +350,61 @@ export default function ChatScreen() {
               backgroundColor: theme.dark ? "rgba(96,165,250,0.08)" : "rgba(37,99,235,0.08)"
             }}
           />
-          <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.sm, gap: 12 }}>
-            <BackHeader title={otherUser?.fullName || "Conversation"} onBack={() => router.back()} />
+          <View
+            style={{
+              paddingHorizontal: theme.spacing.lg,
+              paddingTop: theme.spacing.md,
+              paddingBottom: theme.spacing.sm,
+              gap: 12,
+              backgroundColor: theme.colors.background,
+              borderBottomWidth: 1,
+              borderBottomColor: theme.colors.border,
+              zIndex: 5,
+              elevation: 5
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+                paddingBottom: 6
+              }}
+            >
+              <Pressable
+                onPress={() => router.back()}
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 21,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: theme.colors.surfaceAlt
+                }}
+              >
+                <Ionicons name="chevron-back" size={22} color={theme.colors.text} />
+              </Pressable>
+              <Avatar image={otherUser?.profilePhoto} size={42} />
+              <Text style={{ color: theme.colors.text, fontWeight: "900", fontSize: 17, flex: 1 }} numberOfLines={1}>
+                {otherUser?.fullName || "Conversation"}
+              </Text>
+              {threadId ? (
+                <Pressable
+                  onPress={() => void handlePinToggle()}
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: isPinned ? theme.colors.primarySoft : theme.colors.surfaceAlt
+                  }}
+                >
+                  <Ionicons name={isPinned ? "pin" : "pin-outline"} size={18} color={isPinned ? theme.colors.primaryDark : theme.colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
             {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
-
-            <SurfaceCard style={{ backgroundColor: theme.dark ? "#122237" : theme.colors.surfaceAlt }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                <Avatar image={otherUser?.profilePhoto} size={48} />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: theme.colors.text, fontWeight: "900" }}>{otherUser?.fullName || "Conversation"}</Text>
-                  <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
-                    {threadId ? "Messages stay synced across your inbox." : "Awaiting thread"}
-                  </Text>
-                </View>
-              </View>
-            </SurfaceCard>
           </View>
 
           {loading ? (
@@ -283,26 +431,53 @@ export default function ChatScreen() {
               contentContainerStyle={{
                 paddingHorizontal: theme.spacing.lg,
                 paddingTop: 8,
-                paddingBottom: 16,
+                paddingBottom: 16 + Math.max(insets.bottom, 0),
                 gap: 10,
                 flexGrow: messages.length ? 0 : 1
               }}
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              bounces={false}
+              alwaysBounceVertical={false}
               renderItem={({ item, index }) => {
                 const mine = item.senderId === user?.id;
                 const nextMessage = messages[index + 1];
+                const previousMessage = messages[index - 1];
                 const showSeen = mine && (!nextMessage || nextMessage.senderId !== user?.id);
+                const showDateDivider = !previousMessage || messageDateKey(previousMessage.sentAt) !== messageDateKey(item.sentAt);
 
                 return (
-                  <View style={{ alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "92%" }}>
-                    <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-end", justifyContent: mine ? "flex-end" : "flex-start" }}>
+                  <View style={{ width: "100%", gap: 10 }}>
+                    {showDateDivider ? (
+                      <View style={{ alignItems: "center", marginVertical: 4 }}>
+                        <Text
+                          style={{
+                            color: theme.colors.textMuted,
+                            fontSize: 12,
+                            fontWeight: "800",
+                            backgroundColor: theme.colors.surfaceAlt,
+                            paddingHorizontal: 12,
+                            paddingVertical: 6,
+                            borderRadius: 999,
+                            overflow: "hidden"
+                          }}
+                        >
+                          {formatDateDivider(item.sentAt)}
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View style={{ alignSelf: mine ? "flex-end" : "flex-start", width: "100%", alignItems: mine ? "flex-end" : "flex-start" }}>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        gap: 8,
+                        alignItems: "flex-end",
+                        justifyContent: mine ? "flex-end" : "flex-start",
+                        width: "100%"
+                      }}
+                    >
                       {!mine ? <Avatar image={otherUser?.profilePhoto} size={30} /> : null}
-                      <View style={{ maxWidth: "84%" }}>
-                        {!mine ? (
-                          <Text style={{ color: theme.colors.textLight, fontSize: 11, marginBottom: 4, marginLeft: 8 }}>
-                            {otherUser?.fullName || "Contact"}
-                          </Text>
-                        ) : null}
+                      <View style={{ maxWidth: mine ? bubbleMaxWidth : incomingBubbleMaxWidth, minWidth: item.text.trim().length <= 8 ? 96 : 72, flexShrink: 1 }}>
                         <View
                           style={{
                             backgroundColor: mine ? ownBubbleBackground : theme.colors.card,
@@ -314,7 +489,7 @@ export default function ChatScreen() {
                             ...theme.shadow
                           }}
                         >
-                          <Text style={{ color: mine ? ownBubbleText : theme.colors.text, flexShrink: 1 }}>{item.text}</Text>
+                          <Text style={{ color: mine ? ownBubbleText : theme.colors.text, lineHeight: 20, flexShrink: 1 }}>{item.text}</Text>
                           {item.attachments?.length ? (
                             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
                               {item.attachments.map((uri, attachmentIndex) => (
@@ -328,9 +503,9 @@ export default function ChatScreen() {
                               ))}
                             </View>
                           ) : null}
-                          <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 4, marginTop: 6 }}>
-                            <Text style={{ color: mine ? ownMetaText : theme.colors.textMuted, fontSize: 11, flexShrink: 1 }}>
-                              {formatMessageTime(item.sentAt)}
+                          <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 4, marginTop: 6, minWidth: 58 }}>
+                            <Text style={{ color: mine ? ownMetaText : theme.colors.textMuted, fontSize: 11 }}>
+                              {formatBubbleTime(item.sentAt)}
                             </Text>
                             {mine && showSeen ? (
                               <Ionicons
@@ -342,6 +517,7 @@ export default function ChatScreen() {
                           </View>
                         </View>
                       </View>
+                    </View>
                     </View>
                   </View>
                 );
@@ -366,7 +542,7 @@ export default function ChatScreen() {
             style={{
               paddingHorizontal: theme.spacing.lg,
               paddingTop: 12,
-              paddingBottom: 16,
+              paddingBottom: Math.max(insets.bottom, 16),
               backgroundColor: theme.colors.background,
               borderTopWidth: 1,
               borderTopColor: theme.colors.border,
@@ -375,10 +551,10 @@ export default function ChatScreen() {
           >
             {attachments.length ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                {attachments.map((uri, attachmentIndex) => (
-                  <View key={`${uri}-${attachmentIndex}`} style={{ width: 76, gap: 6 }}>
-                    <Pressable onPress={() => setPreviewUri(uri)}>
-                      <Avatar image={uri} size={76} icon="image-outline" />
+                {attachments.map((item, attachmentIndex) => (
+                  <View key={`${item.id || item.url}-${attachmentIndex}`} style={{ width: 76, gap: 6 }}>
+                    <Pressable onPress={() => setPreviewUri(item.url)}>
+                      <Avatar image={item.url} size={76} icon="image-outline" />
                     </Pressable>
                     <Pressable onPress={() => setAttachments(attachments.filter((_, index) => index !== attachmentIndex))}>
                       <Text style={{ textAlign: "center", color: theme.colors.danger, fontSize: 12, fontWeight: "700" }}>Remove</Text>
@@ -400,17 +576,19 @@ export default function ChatScreen() {
               }}
             >
               <Pressable
-                onPress={() => void pickMediaFiles(attachments).then(setAttachments)}
+                onPress={() => void handlePickPhotos()}
+                disabled={uploadingAttachment}
                 style={{
                   width: 42,
                   height: 42,
                   borderRadius: 21,
                   alignItems: "center",
                   justifyContent: "center",
-                  backgroundColor: theme.colors.surfaceAlt
+                  backgroundColor: uploadingAttachment ? theme.colors.primarySoft : theme.colors.surfaceAlt,
+                  opacity: uploadingAttachment ? 0.72 : 1
                 }}
               >
-                <Ionicons name="attach-outline" size={20} color={theme.colors.primaryDark} />
+                <Ionicons name="image-outline" size={20} color={theme.colors.primaryDark} />
               </Pressable>
               <TextInput
                 value={draft}

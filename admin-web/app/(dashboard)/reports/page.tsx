@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { complaintService, type ComplaintReport } from "@kabisig/shared";
+import { complaintService, formatBookingReference, type ComplaintReport } from "@kabisig/shared";
 import { Card, DataTable, EmptyPanel, FilterBar, SearchInput, Select, StatusBadge, Topbar } from "../../../components/ui";
+import { complaintRows, downloadCsvReport, logAdminAction } from "../../../lib/admin-actions";
+import { useAdminAuth } from "../../../lib/auth-context";
 import { subscribeMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
 
 export default function ReportsPage() {
+  const { admin } = useAdminAuth();
   const [snapshot, setSnapshot] = useState<MarketplaceSnapshot | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -17,20 +20,30 @@ export default function ReportsPage() {
   }, []);
 
   const complaints = snapshot?.complaints ?? [];
+  const bookingById = new Map((snapshot?.bookings ?? []).map((booking) => [booking.bookingId, booking]));
 
   const filteredComplaints = complaints.filter((complaint) =>
     (statusFilter === "all" || complaint.status === statusFilter) &&
     (typeFilter === "all" || complaint.type === typeFilter) &&
-    [complaint.reportId, complaint.bookingId, complaint.type, complaint.description, complaint.status]
+    [complaint.reportId, complaint.bookingId, formatBookingReference(bookingById.get(complaint.bookingId) || complaint.bookingId), complaint.type, complaint.description, complaint.status]
       .join(" ")
       .toLowerCase()
       .includes(search.trim().toLowerCase())
   );
 
   async function updateStatus(reportId: string, status: ComplaintReport["status"]) {
+    const complaint = complaints.find((item) => item.reportId === reportId);
     setUpdatingId(reportId);
     try {
       await complaintService.updateComplaintStatus(reportId, status);
+      await logAdminAction(
+        admin,
+        "complaint_status_changed",
+        "complaints",
+        reportId,
+        `Complaint ${reportId} changed to ${status}.`,
+        { previousStatus: complaint?.status || null, nextStatus: status, bookingId: complaint?.bookingId || null }
+      );
     } finally {
       setUpdatingId(null);
     }
@@ -38,7 +51,22 @@ export default function ReportsPage() {
 
   return (
     <>
-      <Topbar title="Reports and complaints" />
+      <Topbar
+        title="Reports and complaints"
+        action={
+          <button
+            className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-bold text-white"
+            onClick={() => {
+              downloadCsvReport(`kabisig-complaints-${new Date().toISOString().slice(0, 10)}.csv`, complaintRows(filteredComplaints));
+              void logAdminAction(admin, "export_generated", "complaints", "complaints-report", "Exported complaints report.", {
+                rows: filteredComplaints.length,
+              });
+            }}
+          >
+            Export complaints
+          </button>
+        }
+      />
       <FilterBar>
         <SearchInput placeholder="Search complaint or booking..." value={search} onChange={(event) => setSearch(event.target.value)} />
         <Select
@@ -72,7 +100,7 @@ export default function ReportsPage() {
             columns={["Report ID", "Booking", "Type", "Description", "Status", "Actions"]}
             rows={filteredComplaints.map((complaint) => [
               complaint.reportId,
-              complaint.bookingId,
+              formatBookingReference(bookingById.get(complaint.bookingId) || complaint.bookingId),
               complaint.type,
               complaint.description,
               <StatusBadge key={complaint.reportId} status={complaint.status} />,

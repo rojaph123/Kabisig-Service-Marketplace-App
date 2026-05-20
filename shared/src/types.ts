@@ -13,8 +13,10 @@ export type BookingStatus =
   | "In Progress"
   | "Completed"
   | "Cancelled";
-export type PaymentStatus = "Pending" | "Paid" | "Failed" | "Refunded";
+export type PaymentStatus = "Pending" | "Waiting for Completion" | "Paid" | "Cancelled" | "Refunded" | "Failed";
 export type ComplaintStatus = "Open" | "Under Review" | "Resolved" | "Closed";
+export type BookingChangeRequestType = "cancellation" | "reschedule";
+export type BookingChangeRequestStatus = "Pending" | "Approved" | "Declined";
 export type ProviderModerationStatus = "active" | "suspended" | "banned";
 export type AuditActionType =
   | "provider_approved"
@@ -26,6 +28,13 @@ export type AuditActionType =
   | "category_created"
   | "category_updated"
   | "category_deleted"
+  | "coverage_area_created"
+  | "coverage_area_updated"
+  | "coverage_area_deleted"
+  | "booking_change_resolved"
+  | "booking_status_changed"
+  | "complaint_status_changed"
+  | "announcement_broadcast"
   | "booking_conflict_logged"
   | "export_generated"
   | "storage_cleanup";
@@ -36,8 +45,11 @@ export interface User {
   role: UserRole;
   authProvider: AuthProvider;
   fullName: string;
+  phone?: string;
   profilePhoto?: string;
   appTheme?: "light" | "dark" | "system";
+  termsAcceptedAt?: string;
+  termsVersion?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,7 +59,9 @@ export interface CustomerProfile {
   phone: string;
   addresses: string[];
   defaultLocation: string;
+  pinpointLocation?: string;
   profilePhotoUrl?: string;
+  savedProviderIds?: string[];
   notificationPreferences: {
     push: boolean;
     email: boolean;
@@ -90,6 +104,17 @@ export interface MediaAttachment {
   deletedBy?: string;
 }
 
+export interface ProviderPortfolioItem {
+  portfolioItemId: string;
+  providerId: string;
+  title: string;
+  description?: string;
+  beforePhoto: MediaAttachment;
+  afterPhoto: MediaAttachment;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ScheduleException {
   id: string;
   date: string;
@@ -116,6 +141,7 @@ export interface ProviderProfile {
   permitCertificateUrl?: string;
   sampleWorkUrls?: string[];
   sampleWorks?: MediaAttachment[];
+  portfolio?: ProviderPortfolioItem[];
   birthday?: string;
   age?: number;
   phone: string;
@@ -162,6 +188,7 @@ export interface ServiceCategory {
   iconColor?: string;
   description: string;
   startingPrice: number;
+  active?: boolean;
 }
 
 export interface CoverageArea {
@@ -191,6 +218,26 @@ export interface BookingConflictHistory {
   reason?: string;
 }
 
+export interface BookingChangeRequest {
+  requestId: string;
+  bookingId: string;
+  requestedBy: string;
+  requestedByRole: "customer" | "provider";
+  targetUserId: string;
+  type: BookingChangeRequestType;
+  status: BookingChangeRequestStatus;
+  reason: string;
+  currentScheduledAt?: string;
+  requestedDate?: string;
+  requestedTime?: string;
+  requestedScheduledAt?: string;
+  adminNotes?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Booking {
   bookingId: string;
   customerId: string;
@@ -207,6 +254,9 @@ export interface Booking {
   attachmentItems?: MediaAttachment[];
   status: BookingStatus;
   amount: number;
+  workerAcceptedAt?: string;
+  customerAcceptanceConfirmedAt?: string;
+  customerAcceptanceConfirmedBy?: string;
   statusHistory?: BookingStatusHistory[];
   createdAt: string;
   updatedAt: string;
@@ -231,6 +281,7 @@ export interface MessageThread {
   lastMessageSenderId?: string;
   readBy?: Record<string, string>;
   archivedFor?: string[];
+  pinnedFor?: string[];
   updatedAt: string;
 }
 
@@ -270,6 +321,47 @@ export interface NotificationItem {
   createdAt: string;
   pushDeliveredAt?: string;
   pushTokenId?: string;
+}
+
+export interface CommunityPostComment {
+  commentId: string;
+  userId: string;
+  body: string;
+  attachments?: string[];
+  attachmentItems?: MediaAttachment[];
+  replies?: CommunityPostComment[];
+  createdAt: string;
+}
+
+export interface CommunityPostPhotoEngagement {
+  photoId: string;
+  url: string;
+  likes: string[];
+  comments: CommunityPostComment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CommunityPost {
+  postId: string;
+  customerId: string;
+  serviceCategoryId: string;
+  serviceName: string;
+  body: string;
+  address: string;
+  location?: string;
+  preferredSchedule?: string;
+  attachments?: string[];
+  attachmentItems?: MediaAttachment[];
+  amount: number;
+  status: "Open" | "Booked" | "Cancelled";
+  claimedProviderId?: string;
+  bookingId?: string;
+  likes: string[];
+  comments: CommunityPostComment[];
+  photoEngagements?: CommunityPostPhotoEngagement[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PushNotificationToken {
