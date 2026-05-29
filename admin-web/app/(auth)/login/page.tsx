@@ -19,7 +19,7 @@ export default function LoginPage() {
           <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-white/10 blur-3xl" />
           <div className="absolute -left-10 bottom-0 h-32 w-32 rounded-full bg-white/10 blur-2xl" />
           <div className="relative">
-            <Image src="/branding/logo-with-tagline.jfif" alt="Kabisig logo" width={360} height={180} className="rounded-[28px] shadow-lg" />
+            <Image src="/branding/logo-with-tagline.jfif" alt="Kabisig logo" width={360} height={180} priority className="h-auto rounded-[28px] shadow-lg" />
             <h1 className="mt-10 text-4xl font-black">Marketplace command center</h1>
             <p className="mt-4 max-w-lg text-white/85">
               Approve providers, manage bookings and payments, monitor complaints, and track Kabisig marketplace health from one responsive web dashboard.
@@ -64,8 +64,12 @@ export default function LoginPage() {
             <button
               className="mt-6 w-full rounded-2xl bg-kabisig-blue px-5 py-4 text-sm font-bold text-white shadow-lg shadow-sky-200/70"
               onClick={async () => {
-                await login(email, password);
-                router.push("/dashboard");
+                try {
+                  await login(email.trim(), password);
+                  router.push("/dashboard");
+                } catch {
+                  // The auth context renders the friendly error message.
+                }
               }}
             >
               Sign in to admin panel

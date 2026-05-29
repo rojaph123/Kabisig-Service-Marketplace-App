@@ -254,6 +254,14 @@ export default function ProviderDetailScreen() {
         </View>
 
         <View style={{ padding: 18, gap: 14 }}>
+          {provider.financialStatus?.restrictedFromAcceptingBookings ? (
+            <View style={{ borderRadius: 18, padding: 14, backgroundColor: theme.colors.warningSoft, borderWidth: 1, borderColor: theme.colors.warning }}>
+              <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Booking acceptance is temporarily paused</Text>
+              <Text style={{ color: theme.colors.textMuted, marginTop: 4, lineHeight: 18 }}>
+                This worker can still receive requests, but cannot accept bookings until the current commission balance is settled.
+              </Text>
+            </View>
+          ) : null}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
             {[
               { label: "Experience", value: `${provider.yearsExperience} yrs` },

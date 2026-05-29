@@ -18,6 +18,7 @@ export type ComplaintStatus = "Open" | "Under Review" | "Resolved" | "Closed";
 export type BookingChangeRequestType = "cancellation" | "reschedule";
 export type BookingChangeRequestStatus = "Pending" | "Approved" | "Declined";
 export type ProviderModerationStatus = "active" | "suspended" | "banned";
+export type WorkerPaymentStatus = "Not Required" | "Pending" | "Submitted" | "Approved" | "Rejected" | "Overdue" | "Waived";
 export type AuditActionType =
   | "provider_approved"
   | "provider_rejected"
@@ -37,7 +38,17 @@ export type AuditActionType =
   | "announcement_broadcast"
   | "booking_conflict_logged"
   | "export_generated"
-  | "storage_cleanup";
+  | "storage_cleanup"
+  | "worker_payment_settings_updated"
+  | "registration_payment_submitted"
+  | "registration_payment_approved"
+  | "registration_payment_rejected"
+  | "commission_payment_submitted"
+  | "commission_payment_approved"
+  | "commission_payment_rejected"
+  | "worker_restricted_finance"
+  | "worker_restriction_lifted"
+  | "monthly_commission_bill_generated";
 
 export interface User {
   id: string;
@@ -167,6 +178,16 @@ export interface ProviderProfile {
     week: number;
     month: number;
   };
+  financialStatus?: {
+    registrationPaymentStatus?: WorkerPaymentStatus;
+    freeBookingsGranted?: number;
+    freeBookingsUsed?: number;
+    freeBookingsRemaining?: number;
+    restrictedFromAcceptingBookings?: boolean;
+    restrictionReason?: string;
+    hasOverdueCommission?: boolean;
+    updatedAt?: string;
+  };
   documentsStatus: string;
 }
 
@@ -179,6 +200,133 @@ export interface ProviderApplication {
   reviewedAt?: string;
   reviewNotes?: string;
   documentUrls: UploadedDocument[];
+  registrationPaymentId?: string;
+  registrationPaymentStatus?: WorkerPaymentStatus;
+  registrationFeeRequired?: boolean;
+  registrationPaymentSnapshot?: Partial<WorkerRegistrationPayment>;
+}
+
+export interface WorkerPaymentSettings {
+  registrationFeeEnabled: boolean;
+  registrationFeeAmount: number;
+  activeQrCodeUrl?: string | null;
+  activeQrCodePath?: string | null;
+  paymentMethodName: string;
+  paymentInstructions: string;
+  freeRegistrationPromoEnabled: boolean;
+  freeRegistrationApprovedWorkerLimit: number;
+  approvedFreeRegistrationCount: number;
+  commissionEnabled: boolean;
+  commissionPercentage: number;
+  freeBookingsGranted: number;
+  monthlyBillDueDay: number;
+  gracePeriodDays: number;
+  lateSurchargeRate: number;
+  billingCycle: "monthly";
+  featureActivatedAt: string;
+  updatedBy?: string;
+  updatedAt: string;
+}
+
+export interface WorkerRegistrationPayment {
+  paymentId: string;
+  applicationId: string;
+  providerId: string;
+  userId: string;
+  required: boolean;
+  waived: boolean;
+  waiverReason?: "free_registration" | "promo" | "existing_worker";
+  amount: number;
+  methodName: string;
+  instructionsSnapshot?: string;
+  status: WorkerPaymentStatus;
+  proofImageUrl?: string;
+  proofImagePath?: string;
+  referenceNumber?: string;
+  paymentDate?: string;
+  submittedAt?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  adminRemarks?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkerCommissionBill {
+  billId: string;
+  providerId: string;
+  userId: string;
+  cycleStart: string;
+  cycleEnd: string;
+  generatedAt: string;
+  dueDate: string;
+  graceEndsAt: string;
+  status: WorkerPaymentStatus;
+  totalIncome: number;
+  totalCompletedPaidBookings: number;
+  freeBookingsAppliedThisBill: number;
+  freeBookingsRemainingAfterBill: number;
+  commissionableBookings: number;
+  commissionPercentage: number;
+  baseCommissionAmount?: number;
+  surchargeRateApplied?: number;
+  surchargeDaysApplied?: number;
+  surchargeAmount?: number;
+  amountDue: number;
+  proofImageUrl?: string;
+  proofImagePath?: string;
+  referenceNumber?: string;
+  paymentDate?: string;
+  submittedAt?: string;
+  upcomingDueNotifiedAt?: string;
+  dueSoonReminderSentAt?: string;
+  dueDateReminderSentAt?: string;
+  graceReminderSentAt?: string;
+  lastOverdueReminderSentAt?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  adminRemarks?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkerFinanceSummary {
+  providerId: string;
+  userId: string;
+  registrationPaymentStatus: WorkerPaymentStatus;
+  registrationPaymentId?: string;
+  totalFreeBookingsGranted: number;
+  freeBookingsUsed: number;
+  freeBookingsRemaining: number;
+  totalCompletedPaidBookings: number;
+  totalIncome: number;
+  totalCommissionableBookings: number;
+  totalCommissionPaid: number;
+  totalCommissionPending: number;
+  totalCommissionOverdue: number;
+  hasOverdueCommission: boolean;
+  restrictedFromAcceptingBookings: boolean;
+  restrictionReason?: string;
+  restrictedSince?: string;
+  restrictionLiftedAt?: string;
+  lastBillId?: string;
+  featureActivatedAt?: string;
+  updatedAt: string;
+}
+
+export interface AdminRevenueRecord {
+  revenueId: string;
+  sourceType: "registration_fee" | "monthly_commission";
+  sourcePaymentId: string;
+  providerId: string;
+  userId: string;
+  amount: number;
+  status: "Approved";
+  approvedBy: string;
+  approvedAt: string;
+  cycleStart?: string;
+  cycleEnd?: string;
+  createdAt: string;
 }
 
 export interface ServiceCategory {
@@ -208,6 +356,7 @@ export interface BookingStatusHistory {
 export interface BookingConflictHistory {
   conflictId: string;
   providerId: string;
+  customerId?: string;
   bookingId?: string;
   requestedDate: string;
   requestedTime: string;
@@ -254,6 +403,11 @@ export interface Booking {
   attachmentItems?: MediaAttachment[];
   status: BookingStatus;
   amount: number;
+  commissionEvaluated?: boolean;
+  commissionBillId?: string;
+  commissionable?: boolean;
+  usedFreeBookingAllowance?: boolean;
+  commissionAmount?: number;
   workerAcceptedAt?: string;
   customerAcceptanceConfirmedAt?: string;
   customerAcceptanceConfirmedBy?: string;
@@ -437,6 +591,10 @@ export interface ProviderOnboardingForm {
   validIdDriveLink?: string;
   permitCertificateDriveLink?: string;
   sampleWorkUrls?: string[];
+  registrationPaymentProofUrl?: string;
+  registrationPaymentReference?: string;
+  registrationPaymentDate?: string;
+  registrationPaymentMethod?: string;
   emergencyContact: string;
   agreementAccepted: boolean;
   availability?: AvailabilitySchedule[];

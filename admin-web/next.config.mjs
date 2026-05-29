@@ -8,6 +8,7 @@ const { loadEnvConfig } = nextEnv;
 loadEnvConfig(__dirname);
 
 const nextConfig = {
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   transpilePackages: ["@kabisig/shared"]
 };
 

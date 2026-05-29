@@ -1,0 +1,11 @@
+App version:
+1.0.0
+
+Android versionCode:
+1
+
+iOS buildNumber:
+1
+
+EAS app version source:
+remote

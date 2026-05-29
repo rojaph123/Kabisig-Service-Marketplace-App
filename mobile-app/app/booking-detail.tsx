@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { ActivityIndicator, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import {
   bookingService,
@@ -19,7 +20,7 @@ import {
   type Review,
   type User
 } from "@kabisig/shared";
-import { Avatar, BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, ImageUploadField, LoadingState, MapPreviewModal, MediaPreviewModal, MultiMediaPickerField, PrimaryButton, StatusBadge, SurfaceCard } from "../src/components";
+import { Avatar, BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, LoadingState, MapPreviewModal, MediaPreviewModal, MultiMediaPickerField, PrimaryButton, StatusBadge, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
 import { readableAppError } from "../src/utils/errors";
@@ -41,6 +42,63 @@ async function createNotificationQuietly(data: Parameters<typeof notificationSer
   } catch (error) {
     console.warn("Notification write skipped:", error);
   }
+}
+
+function ProofPhotoTile({
+  label,
+  value,
+  onPick,
+  onClear
+}: {
+  label: string;
+  value: string;
+  onPick: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        minWidth: 0,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: value ? theme.colors.success : theme.colors.border,
+        backgroundColor: theme.colors.surfaceAlt,
+        overflow: "hidden"
+      }}
+    >
+      <Pressable onPress={onPick} style={{ height: 118, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.card }}>
+        {value ? (
+          <Image source={{ uri: value }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+        ) : (
+          <View style={{ alignItems: "center", gap: 8 }}>
+            <View style={{ width: 42, height: 42, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.primarySoft }}>
+              <Ionicons name="camera-outline" size={22} color={theme.colors.primaryDark} />
+            </View>
+            <Text style={{ color: theme.colors.textMuted, fontSize: 11, fontWeight: "800" }}>Tap to upload</Text>
+          </View>
+        )}
+      </Pressable>
+      <View style={{ padding: 9, gap: 7 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Ionicons name={value ? "checkmark-circle" : "ellipse-outline"} size={16} color={value ? theme.colors.success : theme.colors.textMuted} />
+          <Text style={{ color: theme.colors.text, fontSize: 12, fontWeight: "900", flex: 1 }} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <Pressable onPress={onPick} style={{ flex: 1, borderRadius: 11, paddingVertical: 7, alignItems: "center", backgroundColor: theme.colors.primary }}>
+            <Text style={{ color: "#fff", fontSize: 11, fontWeight: "900" }}>{value ? "Change" : "Upload"}</Text>
+          </Pressable>
+          {value ? (
+            <Pressable onPress={onClear} style={{ borderRadius: 11, paddingHorizontal: 9, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.dangerSoft }}>
+              <Ionicons name="trash-outline" size={14} color={theme.colors.danger} />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
 }
 
 function reviewRoute(bookingId: string) {
@@ -84,6 +142,7 @@ export default function BookingDetailScreen() {
   const [paymentMethod, setPaymentMethod] = useState("Cash on Service");
   const [completionProgress, setCompletionProgress] = useState<{ title: string; message: string } | null>(null);
   const [statusProgress, setStatusProgress] = useState<{ title: string; message: string } | null>(null);
+  const [customerConfirmationNotice, setCustomerConfirmationNotice] = useState(false);
   const [editAddress, setEditAddress] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editAttachments, setEditAttachments] = useState<string[]>([]);
@@ -138,6 +197,58 @@ export default function BookingDetailScreen() {
     { label: "Completion notes", done: Boolean(proofNotes.trim()) }
   ];
   const proofChecklistComplete = proofChecklist.every((item) => item.done);
+
+  async function pickCompletionProof(setter: (value: string) => void) {
+    const maxBytes = 8 * 1024 * 1024;
+
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        if (file.size > maxBytes) {
+          setFeedback({ type: "error", title: "Photo too large", message: "Please upload a proof photo smaller than 8 MB." });
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            setter(reader.result);
+          }
+        };
+        reader.onerror = () => setFeedback({ type: "error", title: "Photo upload failed", message: "Please choose the proof photo again." });
+        reader.readAsDataURL(file);
+      };
+      input.click();
+      return;
+    }
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setFeedback({ type: "error", title: "Gallery permission needed", message: "Allow photo access to upload proof of work." });
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      quality: 0.8,
+      base64: true
+    });
+    if (result.canceled || !result.assets.length) return;
+    const asset = result.assets[0];
+    if (asset.fileSize && asset.fileSize > maxBytes) {
+      setFeedback({ type: "error", title: "Photo too large", message: "Please upload a proof photo smaller than 8 MB." });
+      return;
+    }
+    if (!asset.base64) {
+      setFeedback({ type: "error", title: "Photo upload failed", message: "Please choose the proof photo again." });
+      return;
+    }
+    setter(`data:${asset.mimeType || "image/jpeg"};base64,${asset.base64}`);
+  }
 
   async function refreshBooking() {
     if (!params.bookingId) return;
@@ -427,6 +538,13 @@ export default function BookingDetailScreen() {
           title: "Job completed",
           message: "The booking was completed and the payment record has been reflected in earnings and payments."
         });
+      } else if (nextStatus === "Accepted") {
+        setFeedback({
+          type: "success",
+          title: "Booking accepted",
+          message: "Please wait for the customer to confirm this booking before marking yourself as On the Way."
+        });
+        setCustomerConfirmationNotice(true);
       } else {
         setFeedback({
           type: "success",
@@ -570,44 +688,55 @@ export default function BookingDetailScreen() {
               keyboardVerticalOffset={keyboardOffset}
             >
               <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.66)", justifyContent: "flex-end", paddingHorizontal: 18, paddingTop: 18, paddingBottom: Math.max(insets.bottom, 18) }}>
-                <SurfaceCard style={{ maxHeight: "88%", gap: 14 }}>
-                <Text style={{ color: theme.colors.text, fontSize: 22, fontWeight: "900" }}>Complete job</Text>
-                <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>
-                  Add proof of work before completion. These before and after photos will also be added to your portfolio.
-                </Text>
-                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12, paddingRight: 4 }}>
-                  <View style={{ borderRadius: 18, padding: 14, backgroundColor: theme.colors.surfaceAlt, gap: 10 }}>
-                    <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Proof checklist</Text>
-                    <Text style={{ color: theme.colors.textMuted, lineHeight: 19 }}>
-                      Complete each item below before the final completion step to keep records clear for the customer and admin.
+                <SurfaceCard style={{ maxHeight: "90%", gap: 12, padding: 14, borderTopLeftRadius: 24, borderTopRightRadius: 24 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: theme.colors.text, fontSize: 22, fontWeight: "900" }}>Complete job</Text>
+                    <Text style={{ color: theme.colors.textMuted, lineHeight: 18, fontSize: 12 }}>
+                      Add proof, notes, and final cash amount.
                     </Text>
-                    <View style={{ gap: 8 }}>
-                      {proofChecklist.map((item) => (
-                        <View key={item.label} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                          <Ionicons
-                            name={item.done ? "checkmark-circle" : "ellipse-outline"}
-                            size={18}
-                            color={item.done ? theme.colors.success : theme.colors.textMuted}
-                          />
-                          <Text style={{ color: item.done ? theme.colors.text : theme.colors.textMuted, fontWeight: item.done ? "800" : "700" }}>
-                            {item.label}
-                          </Text>
-                        </View>
-                      ))}
+                  </View>
+                  <Pressable onPress={() => setShowCompletionForm(false)} style={{ width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surfaceAlt }}>
+                    <Ionicons name="close" size={18} color={theme.colors.textMuted} />
+                  </Pressable>
+                </View>
+
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  {proofChecklist.map((item) => (
+                    <View
+                      key={item.label}
+                      style={{
+                        borderRadius: 999,
+                        paddingHorizontal: 9,
+                        paddingVertical: 6,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 5,
+                        backgroundColor: item.done ? theme.colors.successSoft : theme.colors.surfaceAlt
+                      }}
+                    >
+                      <Ionicons name={item.done ? "checkmark-circle" : "ellipse-outline"} size={14} color={item.done ? theme.colors.success : theme.colors.textMuted} />
+                      <Text style={{ color: item.done ? theme.colors.success : theme.colors.textMuted, fontSize: 11, fontWeight: "800" }}>{item.label}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingRight: 2, paddingBottom: 2 }}>
+                  <View style={{ gap: 8 }}>
+                    <Text style={{ color: theme.colors.text, fontSize: 14, fontWeight: "900" }}>Work photos</Text>
+                    <View style={{ flexDirection: "row", gap: 10 }}>
+                      <ProofPhotoTile label="Before" value={beforeProof} onPick={() => void pickCompletionProof(setBeforeProof)} onClear={() => setBeforeProof("")} />
+                      <ProofPhotoTile label="After" value={afterProof} onPick={() => void pickCompletionProof(setAfterProof)} onClear={() => setAfterProof("")} />
                     </View>
                   </View>
-                  <ImageUploadField label="Before photo" value={beforeProof} onChange={setBeforeProof} required compact />
-                  <ImageUploadField label="After photo" value={afterProof} onChange={setAfterProof} required compact />
-                  <Text style={{ color: theme.colors.textMuted, lineHeight: 19 }}>
-                    Why we need this: proof photos protect both customer and worker by showing the work condition before and after completion.
-                  </Text>
+
                   <FormInput
                     label="Proof notes"
                     value={proofNotes}
                     onChangeText={setProofNotes}
                     multiline
                     placeholder="Describe what was completed."
-                    style={{ minHeight: 82, textAlignVertical: "top" }}
+                    style={{ minHeight: 76, textAlignVertical: "top" }}
                     helper="Add a short summary of the completed work for the customer and admin records."
                   />
                   <FormInput
@@ -617,19 +746,16 @@ export default function BookingDetailScreen() {
                     keyboardType="numeric"
                     placeholder={`Minimum ₱${booking.amount.toLocaleString()}`}
                   />
-                  <Text style={{ color: theme.colors.textMuted, lineHeight: 19 }}>
-                    Enter the actual agreed amount. It cannot be lower than the booking starting price and will appear in both customer and provider payment details.
-                  </Text>
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 13, fontWeight: "800" }}>Payment method</Text>
+                  <View style={{ gap: 7 }}>
+                    <Text style={{ color: theme.colors.text, fontSize: 13, fontWeight: "900" }}>Payment method</Text>
                     <View
                       style={{
-                        borderRadius: 16,
+                        borderRadius: 14,
                         borderWidth: 1,
                         borderColor: theme.colors.border,
                         backgroundColor: theme.colors.surfaceAlt,
-                        paddingVertical: 14,
-                        paddingHorizontal: 14,
+                        paddingVertical: 11,
+                        paddingHorizontal: 12,
                         flexDirection: "row",
                         alignItems: "center",
                         justifyContent: "space-between",
@@ -1189,6 +1315,17 @@ export default function BookingDetailScreen() {
         visible={showActionOverlay}
         title="Status updated"
         message="The booking workflow has been updated successfully."
+      />
+
+      <FullScreenPopup
+        visible={customerConfirmationNotice}
+        tone="info"
+        icon="information-circle-outline"
+        compact
+        title="Wait for customer confirmation"
+        message="You accepted this booking. The customer must confirm it first before you can mark the job as On the Way."
+        dismissLabel="Got it"
+        onDismiss={() => setCustomerConfirmationNotice(false)}
       />
     </FixedScreen>
   );

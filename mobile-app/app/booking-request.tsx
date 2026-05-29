@@ -183,6 +183,7 @@ export default function BookingRequestScreen() {
   const selectedProvider =
     filteredProviders.find((provider) => provider.userId === selectedProviderId) ||
     providers.find((provider) => provider.userId === selectedProviderId);
+  const previewLocation = (pinLocation || address).trim();
 
   const providerCategoryOptions = useMemo(() => {
     if (!selectedProvider) return categories;
@@ -329,24 +330,31 @@ export default function BookingRequestScreen() {
         updatedAt: new Date().toISOString()
       });
 
-      await notificationService.createNotification({
-        userId: user.id,
-        type: "booking_created",
-        title: "Booking request sent",
-        body: `Your ${serviceName.toLowerCase()} request was sent to ${preferredName}.`,
-        isRead: false,
-        route: "/(tabs)/bookings",
-        createdAt: new Date().toISOString()
-      });
+      const notificationResults = await Promise.allSettled([
+        notificationService.createNotification({
+          userId: user.id,
+          type: "booking_created",
+          title: "Booking request sent",
+          body: `Your ${serviceName.toLowerCase()} request was sent to ${preferredName}.`,
+          isRead: false,
+          route: "/(tabs)/bookings",
+          createdAt: new Date().toISOString()
+        }),
+        notificationService.createNotification({
+          userId: selectedProvider.userId,
+          type: "booking_request_received",
+          title: "New booking request",
+          body: `${user.fullName} requested ${serviceName.toLowerCase()} on ${scheduledAt}.`,
+          isRead: false,
+          route: "/(tabs)/jobs",
+          createdAt: new Date().toISOString()
+        }),
+      ]);
 
-      await notificationService.createNotification({
-        userId: selectedProvider.userId,
-        type: "booking_request_received",
-        title: "New booking request",
-        body: `${user.fullName} requested ${serviceName.toLowerCase()} on ${scheduledAt}.`,
-        isRead: false,
-        route: "/(tabs)/jobs",
-        createdAt: new Date().toISOString()
+      notificationResults.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.warn(index === 0 ? "Customer booking notification failed:" : "Provider booking notification failed:", result.reason);
+        }
       });
 
       setShowSuccessOverlay(true);
@@ -415,24 +423,34 @@ export default function BookingRequestScreen() {
         dismissLabel="Continue editing"
         onDismiss={() => setPopupError(null)}
       />
-      <MapPreviewModal
-        visible={showMapPreview}
-        title="Booking location preview"
-        subtitle={pinLocation || address}
-        mapUrl={googleMapsEmbedUrl(pinLocation || address)}
-        onClose={() => setShowMapPreview(false)}
-        onOpenExternal={() => void Linking.openURL(googleMapsExternalUrl(pinLocation || address))}
-      />
+      {previewLocation ? (
+        <MapPreviewModal
+          visible={showMapPreview}
+          title="Booking location preview"
+          subtitle={previewLocation}
+          mapUrl={googleMapsEmbedUrl(previewLocation)}
+          onClose={() => setShowMapPreview(false)}
+          onOpenExternal={() => void Linking.openURL(googleMapsExternalUrl(previewLocation))}
+        />
+      ) : null}
 
       <SurfaceCard>
+        {selectedProvider?.financialStatus?.restrictedFromAcceptingBookings ? (
+          <View style={{ borderRadius: 16, padding: 12, marginBottom: 12, backgroundColor: theme.colors.warningSoft, borderWidth: 1, borderColor: theme.colors.warning }}>
+            <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Worker cannot accept yet</Text>
+            <Text style={{ color: theme.colors.textMuted, marginTop: 4, lineHeight: 18 }}>
+              You may still send a booking request, but this worker cannot accept new bookings until the current commission balance is paid.
+            </Text>
+          </View>
+        ) : null}
         <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>{providerHasSingleCategory ? "Selected Service Category" : "Choose Service Category"}<Text style={{ color: theme.colors.danger }}> *</Text></Text>
         {providerHasSingleCategory && selectedCategory ? (
-          <View style={{ marginTop: 12, borderRadius: 18, padding: 14, backgroundColor: theme.colors.primarySoft, borderWidth: 1, borderColor: theme.colors.primary }}>
+          <View style={{ borderRadius: 18, padding: 14, backgroundColor: theme.colors.primarySoft, borderWidth: 1, borderColor: theme.colors.primary, gap: 4 }}>
             <Text style={{ color: theme.colors.text, fontWeight: "800" }}>{selectedCategory.name || selectedCategory.id}</Text>
-            <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>This provider only offers one service category, so it has been selected automatically.</Text>
+            <Text style={{ color: theme.colors.textMuted }}>This provider only offers one service category, so it has been selected automatically.</Text>
           </View>
         ) : (
-          <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
             {(lockedProvider ? providerCategoryOptions : categories).map((category) => (
               <Pressable
                 key={category.id}
@@ -458,7 +476,7 @@ export default function BookingRequestScreen() {
       <SurfaceCard>
         <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>{lockedProvider ? "Selected worker" : "Choose worker"}<Text style={{ color: theme.colors.danger }}> *</Text></Text>
         {!lockedProvider ? <SearchBar placeholder="Search provider..." value={providerQuery} onChangeText={setProviderQuery} /> : null}
-        <View style={{ marginTop: 12, gap: 10 }}>
+        <View style={{ gap: 10 }}>
           {(lockedProvider && selectedProvider ? [selectedProvider] : filteredProviders).map((provider) => (
             <Pressable
               key={provider.userId}
@@ -526,7 +544,7 @@ export default function BookingRequestScreen() {
             </Text>
           </Pressable>
         </View>
-        <View style={{ marginTop: 12 }}>
+        <View style={{ gap: 10 }}>
           <FormInput
             label="Service address"
             value={address}
@@ -537,7 +555,7 @@ export default function BookingRequestScreen() {
             helper="Enter the complete readable address first. This is what the worker will read before using the optional map pin."
           />
           {savedAddresses.length ? (
-            <View style={{ marginTop: 10, gap: 8 }}>
+            <View style={{ gap: 8 }}>
               <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: "800" }}>Saved addresses</Text>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                 {savedAddresses.slice(0, 4).map((savedAddress) => (
@@ -562,7 +580,7 @@ export default function BookingRequestScreen() {
             </View>
           ) : null}
           {pinLocation ? (
-            <View style={{ marginTop: 10, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Ionicons name="checkmark-circle" size={18} color={theme.colors.success} />
               <Text style={{ color: theme.colors.success, fontWeight: "800", flex: 1 }}>
                 GPS pin is active for this booking. Keep the complete address as the main location.
@@ -571,14 +589,25 @@ export default function BookingRequestScreen() {
           ) : null}
         </View>
         <Pressable
-          onPress={() => setShowMapPreview(true)}
+          onPress={() => {
+            if (!previewLocation) {
+              setFeedback({
+                type: "info",
+                title: "Add a location first",
+                message: "Enter the booking address or capture a GPS pin before opening the map preview."
+              });
+              return;
+            }
+            setShowMapPreview(true);
+          }}
+          disabled={!previewLocation}
           style={{
-            marginTop: 10,
             borderRadius: 18,
             padding: 16,
             backgroundColor: theme.colors.surfaceAlt,
             borderWidth: 1,
-            borderColor: theme.colors.border
+            borderColor: theme.colors.border,
+            opacity: previewLocation ? 1 : 0.64
           }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -588,7 +617,7 @@ export default function BookingRequestScreen() {
             <View style={{ flex: 1 }}>
               <Text style={{ color: theme.colors.text, fontWeight: "800" }}>Map preview</Text>
               <Text style={{ color: theme.colors.textMuted }}>
-                {pinLocation ? `${address} • Exact GPS pin ready` : address}
+                {previewLocation ? (pinLocation ? `${address} • Exact GPS pin ready` : address) : "Add the address first to preview the map."}
               </Text>
             </View>
             <Ionicons name="chevron-forward-outline" size={18} color={theme.colors.primaryDark} />
@@ -601,8 +630,8 @@ export default function BookingRequestScreen() {
 
       <SurfaceCard>
         <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>Choose date<Text style={{ color: theme.colors.danger }}> *</Text></Text>
-        <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>Dates are shown in a calendar-style board and reflect provider availability.</Text>
-        <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+        <Text style={{ color: theme.colors.textMuted }}>Dates are shown in a calendar-style board and reflect provider availability.</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {dates.map((day) => {
             const hasAvailability = Boolean(selectedProvider?.availability.some((slot) => slot.day === day.weekday && slot.available));
             const blockedByException = Boolean(selectedProvider?.scheduleExceptions?.some((item) => item.unavailable && item.date === day.key));
@@ -636,18 +665,18 @@ export default function BookingRequestScreen() {
 
       <SurfaceCard>
         <Text style={{ color: theme.colors.text, fontSize: 17, fontWeight: "800" }}>Available time slots<Text style={{ color: theme.colors.danger }}> *</Text></Text>
-        <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
+        <Text style={{ color: theme.colors.textMuted }}>
           Saved workers can still receive a flexible booking request even when they are offline.
         </Text>
         {selectedDateException ? (
-          <View style={{ marginTop: 12, borderRadius: 16, padding: 12, backgroundColor: theme.dark ? theme.colors.warningSoft : "#FFF4E5", borderWidth: 1, borderColor: theme.colors.warning }}>
+          <View style={{ borderRadius: 16, padding: 12, backgroundColor: theme.dark ? theme.colors.warningSoft : "#FFF4E5", borderWidth: 1, borderColor: theme.colors.warning, gap: 4 }}>
             <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Provider unavailable on this date</Text>
-            <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
+            <Text style={{ color: theme.colors.textMuted }}>
               {selectedDateException.reason || "This date was blocked by the provider, so no booking times are available."}
             </Text>
           </View>
         ) : null}
-        <View style={{ marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {availableSlots.length ? (
             availableSlots.map((slot) => (
               <Pressable

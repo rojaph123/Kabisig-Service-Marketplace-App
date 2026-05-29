@@ -1,9 +1,9 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, TextInput, type TextInputProps, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { KABISIG_TERMS_VERSION, userService, type User } from "@kabisig/shared";
-import { BrandBlock, FeedbackBanner, FormInput, FullScreenPopup, LaunchScreen, PrimaryButton, Screen, SurfaceCard } from "../../src/components";
+import { BrandBlock, FeedbackBanner, FullScreenPopup, LaunchScreen, PrimaryButton, Screen, SurfaceCard } from "../../src/components";
 import { TermsAgreementModal } from "../../src/components/TermsAgreement";
 import { useAuth } from "../../src/hooks/AuthProvider";
 import { useGoogleAuth } from "../../src/hooks/useGoogleAuth";
@@ -47,6 +47,45 @@ function GoogleButton({ disabled, onPress }: { disabled?: boolean; onPress: () =
       <Text style={{ color: theme.colors.text, fontWeight: "900", fontSize: 15 }}>{disabled ? "Google sign-in..." : "Continue with Google"}</Text>
     </Pressable>
   );
+}
+
+function AuthField({
+  label,
+  error,
+  style,
+  autoCorrect,
+  ...inputProps
+}: TextInputProps & { label: string; error?: boolean }) {
+  return (
+    <View style={{ gap: 3 }}>
+      <Text style={{ color: theme.colors.text, fontSize: 10, fontWeight: "900" }}>{label}</Text>
+      <TextInput
+        {...inputProps}
+        autoCorrect={autoCorrect ?? false}
+        placeholderTextColor={theme.colors.textMuted}
+        style={[
+          {
+            minHeight: 38,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: error ? theme.colors.danger : theme.colors.border,
+            backgroundColor: theme.colors.card,
+            color: theme.colors.text,
+            paddingHorizontal: 11,
+            paddingVertical: 7,
+            fontSize: 13
+          },
+          style
+        ]}
+      />
+    </View>
+  );
+}
+
+function blurActiveElementOnWeb() {
+  if (Platform.OS !== "web" || typeof document === "undefined") return;
+  const active = document.activeElement as HTMLElement | null;
+  active?.blur?.();
 }
 
 export default function LoginScreen() {
@@ -111,6 +150,7 @@ export default function LoginScreen() {
             ? "/provider/pending"
             : "/(tabs)/home"
         : "/(tabs)/home";
+    blurActiveElementOnWeb();
     router.replace(nextRoute as never);
   }
 
@@ -155,27 +195,27 @@ export default function LoginScreen() {
   }
 
   return (
-    <Screen style={{ backgroundColor: theme.colors.background, paddingHorizontal: 0, paddingTop: 0 }}>
+    <Screen style={{ backgroundColor: theme.colors.background }} contentContainerStyle={{ padding: 0, gap: 0, paddingBottom: 48 }}>
       <LinearGradient
         colors={["#071A34", "#0B2E5E", "#1287DB"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={{ marginHorizontal: -20, marginTop: -20, paddingHorizontal: 24, paddingTop: 56, paddingBottom: 120, borderBottomLeftRadius: 40, borderBottomRightRadius: 40 }}
+        style={{ paddingHorizontal: 22, paddingTop: 42, paddingBottom: 70, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 }}
       >
-        <View style={{ gap: 18, alignItems: "center" }}>
-          <BrandBlock compact size={118} />
-          <View style={{ gap: 8, alignItems: "center" }}>
-            <Text style={{ color: "#fff", fontSize: 32, fontWeight: "900", textAlign: "center" }}>{roleCopy.title}</Text>
-            <Text style={{ color: "rgba(255,255,255,0.86)", lineHeight: 22, textAlign: "center" }}>{roleCopy.subtitle}</Text>
+        <View style={{ gap: 10, alignItems: "center" }}>
+          <BrandBlock compact size={96} />
+          <View style={{ gap: 5, alignItems: "center" }}>
+            <Text style={{ color: "#fff", fontSize: 26, fontWeight: "900", textAlign: "center" }}>{roleCopy.title}</Text>
+            <Text style={{ color: "rgba(255,255,255,0.86)", lineHeight: 18, fontSize: 12, textAlign: "center" }}>{roleCopy.subtitle}</Text>
           </View>
         </View>
       </LinearGradient>
 
-      <View style={{ paddingHorizontal: 20, marginTop: -84, gap: 14 }}>
-          <SurfaceCard style={{ gap: 14 }}>
+      <View style={{ paddingHorizontal: 16, marginTop: -46, gap: 8 }}>
+        <SurfaceCard style={{ gap: 7, padding: 11 }}>
           {feedback ? <FeedbackBanner type={feedback.type} title={feedback.title} message={feedback.message} /> : null}
-          <FormInput label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" placeholder={`${role}@kabisig.app`} />
-          <FormInput label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="Enter your password" />
+          <AuthField label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" placeholder={`${role}@kabisig.app`} />
+          <AuthField label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="Enter your password" />
           <PrimaryButton
             label={loading ? "Signing in..." : "Sign in"}
             onPress={() => {
@@ -202,14 +242,23 @@ export default function LoginScreen() {
             </>
           ) : null}
           <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
-            <Pressable onPress={() => router.push("/(auth)/forgot-password")}>
+            <Pressable onPress={() => {
+              blurActiveElementOnWeb();
+              router.push("/(auth)/forgot-password");
+            }}>
               <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>Forgot password?</Text>
             </Pressable>
-            <Pressable onPress={() => router.push({ pathname: "/(auth)/register", params: { role } })}>
+            <Pressable onPress={() => {
+              blurActiveElementOnWeb();
+              router.push({ pathname: "/(auth)/register", params: { role } });
+            }}>
               <Text style={{ color: theme.colors.primary, fontWeight: "800" }}>{role === "provider" ? "Apply Now" : "Create account"}</Text>
             </Pressable>
           </View>
-          <Pressable onPress={() => router.push("/(auth)/role-selection")}>
+          <Pressable onPress={() => {
+            blurActiveElementOnWeb();
+            router.push("/(auth)/role-selection");
+          }}>
             <Text style={{ color: theme.colors.textMuted, textAlign: "center", fontWeight: "700" }}>Change role</Text>
           </Pressable>
         </SurfaceCard>
@@ -228,6 +277,7 @@ export default function LoginScreen() {
           setFeedback(null);
           if (redirectToRegisterAfterPopup) {
             setRedirectToRegisterAfterPopup(false);
+            blurActiveElementOnWeb();
             router.replace({ pathname: "/(auth)/register", params: { role } });
           }
         }}

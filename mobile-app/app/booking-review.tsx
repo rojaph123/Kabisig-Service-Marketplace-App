@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Pressable, Text, View } from "react-native";
-import { bookingService, formatBookingReference, reviewService, userService, type Booking, type Review } from "@kabisig/shared";
+import { bookingService, formatBookingReference, reviewService, type Booking, type Review } from "@kabisig/shared";
 import { AppHeader, BackHeader, FeedbackBanner, FixedScreen, FormInput, FullScreenPopup, ImageUploadField, LoadingState, MultiMediaPickerField, PrimaryButton, SurfaceCard } from "../src/components";
 import { useAuth } from "../src/hooks/AuthProvider";
 import { theme } from "../src/theme";
@@ -63,11 +63,6 @@ export default function BookingReviewScreen() {
 
       const savedReview = await reviewService.getReviewForBooking(booking.bookingId, user.id);
       setExistingReview(savedReview);
-
-      const avg = await reviewService.getProviderAverageRating(booking.providerId);
-      await userService.updateProviderProfile(booking.providerId, { rating: avg }).catch((error) => {
-        console.warn("Review saved, but provider rating aggregation needs server sync:", error);
-      });
 
       setFeedback({
         type: "success",
@@ -193,12 +188,12 @@ export default function BookingReviewScreen() {
             style={{ minHeight: 110, textAlignVertical: "top" }}
             placeholder="Share what went well, what could improve, and anything future customers should know."
           />
-          <SurfaceCard>
+          <SurfaceCard style={{ gap: 8 }}>
             <Text style={{ color: theme.colors.text, fontWeight: "900", fontSize: 16 }}>Before and after project/work</Text>
-            <Text style={{ color: theme.colors.textMuted, marginTop: 4, lineHeight: 20 }}>
+            <Text style={{ color: theme.colors.textMuted, lineHeight: 18, fontSize: 12 }}>
               Optional, but helpful for showing the actual result of the service.
             </Text>
-            <View style={{ gap: 12, marginTop: 12 }}>
+            <View style={{ gap: 8 }}>
               <ImageUploadField label="Before photo" value={beforePhoto} onChange={setBeforePhoto} compact maxSizeMb={8} />
               <ImageUploadField label="After photo" value={afterPhoto} onChange={setAfterPhoto} compact maxSizeMb={8} />
             </View>

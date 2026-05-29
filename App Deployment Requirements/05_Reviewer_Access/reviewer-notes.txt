@@ -1,0 +1,19 @@
+Kabisig requires sign-in because the app manages service bookings, worker profiles, payment proof, messages, reviews, complaints, and account-specific notifications.
+
+Suggested review flow:
+1. Sign in with the customer demo account.
+2. Browse service providers.
+3. Create a booking request using a test address and sample note.
+4. Open booking details and confirm status visibility.
+5. Sign out.
+6. Sign in with the worker demo account.
+7. Open bookings and worker payments.
+8. Review commission billing and payment proof UI using test data.
+
+No real payment is required for review. Payment proof screens are for recording external payment references reviewed by admin.
+
+Permissions explanation:
+- Location is requested only when the user taps a GPS/autofill action.
+- Photos/videos are requested only when the user uploads service context, chat media, proof of work, or payment screenshots.
+- Notifications support booking, chat, payment, worker approval, and account updates.
+- Camera, microphone, SMS, call log, contacts, and background location are not intentionally used.

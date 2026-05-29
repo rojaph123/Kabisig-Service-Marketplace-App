@@ -1,0 +1,12 @@
+Use this after hosting the admin web app:
+https://YOUR_ADMIN_WEB_DOMAIN/data-deletion
+
+Users may request deletion by opening Kabisig > Profile > Help or emailing support@kabisig.app from the email address linked to their Kabisig account.
+
+The request should include:
+- Full name
+- Account email
+- Role: customer or worker
+- Clear request to delete or deactivate account data
+
+Kabisig may retain records needed for active bookings, payment records, commission billing, complaints, fraud prevention, accounting, safety, legal obligations, or audit history.

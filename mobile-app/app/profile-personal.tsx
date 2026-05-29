@@ -173,7 +173,7 @@ export default function ProfilePersonalScreen() {
       }
       footer={<PrimaryButton label={saving ? "Saving..." : "Save details"} onPress={() => void handleSave()} disabled={saving} />}
     >
-      <ImageUploadField label="Profile photo" value={form.profilePhotoUrl} onChange={(value) => setForm((current) => ({ ...current, profilePhotoUrl: value }))} />
+      <ImageUploadField label="Profile photo" value={form.profilePhotoUrl} onChange={(value) => setForm((current) => ({ ...current, profilePhotoUrl: value }))} compact />
       <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt }}>
         <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Why permissions are requested</Text>
         <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>

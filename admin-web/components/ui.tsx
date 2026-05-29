@@ -6,14 +6,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  AlertCircle,
   BadgeCheck,
   BarChart3,
   BellRing,
   CalendarCheck2,
+  CheckCircle2,
   CreditCard,
+  CircleDollarSign,
   LayoutDashboard,
   LifeBuoy,
   ListFilter,
+  Menu,
+  RefreshCcw,
   Search,
   Settings,
   ShieldCheck,
@@ -22,7 +27,8 @@ import {
   Sun,
   TrendingUp,
   Users,
-  Wrench
+  Wrench,
+  X
 } from "lucide-react";
 import type { ChangeEventHandler, ReactNode, SelectHTMLAttributes } from "react";
 import { useEffect, useState } from "react";
@@ -50,6 +56,7 @@ const navItems = [
   { href: "/bookings", label: "Bookings", icon: CalendarCheck2 },
   { href: "/users", label: "Users", icon: Users },
   { href: "/payments", label: "Payments", icon: CreditCard },
+  { href: "/revenue", label: "Revenue", icon: CircleDollarSign },
   { href: "/reports", label: "Reports", icon: LifeBuoy },
   { href: "/categories", label: "Categories", icon: Wrench },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
@@ -79,7 +86,7 @@ export function Sidebar() {
                 "group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold transition",
                 active
                   ? "bg-kabisig-blue text-white shadow-lg shadow-sky-300/60"
-                  : "text-slate-700 hover:bg-white/60 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/6 dark:hover:text-white"
+                  : "text-slate-700 hover:bg-white/60 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
               )}
             >
               <span className={clsx("flex h-9 w-9 items-center justify-center rounded-xl", active ? "bg-white/14" : "bg-white/80 dark:bg-white/8")}>
@@ -90,7 +97,57 @@ export function Sidebar() {
           );
         })}
       </nav>
+      <div className="mt-8 rounded-[24px] border border-white/60 bg-white/60 p-4 text-sm text-kabisig-muted dark:border-white/10 dark:bg-white/5">
+        <p className="font-black text-kabisig-text">Public store links</p>
+        <div className="mt-3 grid gap-2 font-bold">
+          <Link href="/terms" target="_blank" className="hover:text-kabisig-blue">Terms and Privacy</Link>
+          <Link href="/data-deletion" target="_blank" className="hover:text-kabisig-blue">Data deletion</Link>
+          <Link href="/support" target="_blank" className="hover:text-kabisig-blue">Support</Link>
+        </div>
+      </div>
     </aside>
+  );
+}
+
+export function MobileAdminNav() {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="xl:hidden">
+      <div className="mb-4 flex items-center justify-between rounded-[28px] border border-slate-200/80 bg-white/92 p-4 shadow-soft dark:border-white/10 dark:bg-slate-900/75">
+        <BrandHeader />
+        <button
+          className="rounded-2xl bg-kabisig-blue p-3 text-white"
+          onClick={() => setOpen((current) => !current)}
+          aria-label={open ? "Close admin menu" : "Open admin menu"}
+        >
+          {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </button>
+      </div>
+      {open ? (
+        <nav className="mb-4 grid gap-2 rounded-[28px] border border-slate-200/80 bg-white/95 p-3 shadow-soft dark:border-white/10 dark:bg-slate-900/90">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setOpen(false)}
+                className={clsx(
+                  "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-bold",
+                  active ? "bg-kabisig-blue text-white" : "text-kabisig-text hover:bg-slate-100 dark:hover:bg-white/10"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+      ) : null}
+    </div>
   );
 }
 
@@ -102,7 +159,7 @@ export function Topbar({ title, action }: { title: string; action?: ReactNode })
     async function loadQueue() {
       try {
         const snapshot = await loadMarketplaceSnapshot();
-        setLiveQueue(`${snapshot.analytics.pendingApprovals} approvals • ${snapshot.analytics.activeBookings} active bookings • ${snapshot.analytics.totalComplaints} complaints`);
+        setLiveQueue(`${snapshot.analytics.pendingApprovals} approvals / ${snapshot.analytics.activeBookings} active bookings / ${snapshot.analytics.totalComplaints} complaints`);
       } catch {
         setLiveQueue("Live queue unavailable");
       }
@@ -282,7 +339,7 @@ export function DataTable({
   rows: ReactNode[][];
 }) {
   return (
-    <div className="overflow-hidden rounded-[26px] border border-kabisig-border bg-white/88 dark:bg-slate-950/60">
+    <div className="overflow-x-auto rounded-[26px] border border-kabisig-border bg-white/88 dark:bg-slate-950/60">
       <table className="min-w-full divide-y divide-kabisig-border text-left">
         <thead className="bg-slate-50 dark:bg-white/5">
           <tr>
@@ -315,6 +372,82 @@ export function EmptyPanel({ title, description }: { title: string; description:
       <BadgeCheck className="mx-auto h-10 w-10 text-kabisig-blue" />
       <p className="mt-4 text-lg font-black text-kabisig-text">{title}</p>
       <p className="mt-2 text-sm leading-6 text-kabisig-muted">{description}</p>
+    </div>
+  );
+}
+
+export function LoadingPanel({ title = "Loading", description = "Preparing the latest admin data." }: { title?: string; description?: string }) {
+  return (
+    <div className="rounded-[28px] border border-slate-200/80 bg-white/88 p-8 text-center shadow-soft dark:border-white/10 dark:bg-slate-900/72">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-kabisig-blue dark:bg-white/8">
+        <RefreshCcw className="h-6 w-6 animate-spin" />
+      </div>
+      <p className="mt-4 text-lg font-black text-kabisig-text">{title}</p>
+      <p className="mt-2 text-sm leading-6 text-kabisig-muted">{description}</p>
+    </div>
+  );
+}
+
+export function ErrorPanel({
+  title = "Something went wrong",
+  description,
+  onRetry
+}: {
+  title?: string;
+  description: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-8 text-center shadow-soft dark:border-rose-400/20 dark:bg-rose-500/10">
+      <AlertCircle className="mx-auto h-10 w-10 text-rose-600 dark:text-rose-300" />
+      <p className="mt-4 text-lg font-black text-kabisig-text">{title}</p>
+      <p className="mt-2 text-sm leading-6 text-kabisig-muted">{description}</p>
+      {onRetry ? (
+        <button className="mt-5 rounded-2xl bg-rose-600 px-4 py-3 text-sm font-black text-white" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function AdminNotice({
+  type,
+  title,
+  message,
+  onDismiss
+}: {
+  type: "success" | "error" | "info";
+  title: string;
+  message: string;
+  onDismiss?: () => void;
+}) {
+  const success = type === "success";
+  const error = type === "error";
+  const Icon = success ? CheckCircle2 : error ? AlertCircle : BellRing;
+  return (
+    <div
+      className={clsx(
+        "rounded-[24px] border p-4 shadow-soft",
+        success
+          ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200"
+          : error
+            ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-200"
+            : "border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-200"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <Icon className="mt-0.5 h-5 w-5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-black">{title}</p>
+          <p className="mt-1 text-sm leading-6 opacity-85">{message}</p>
+        </div>
+        {onDismiss ? (
+          <button className="rounded-full p-1 opacity-70 hover:opacity-100" onClick={onDismiss} aria-label="Dismiss notice">
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

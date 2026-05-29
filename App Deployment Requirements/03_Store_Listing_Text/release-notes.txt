@@ -1,0 +1,1 @@
+Initial Kabisig release with customer booking, worker profiles, service status tracking, messaging, reviews, complaints, and worker commission payment workflows.

@@ -1,0 +1,16 @@
+Kabisig is a local service marketplace that helps customers connect with skilled workers for home and business service needs.
+
+Customers can browse providers, send booking requests, confirm accepted bookings, chat about the job, track service status, upload photos or videos for context, and leave reviews after completion.
+
+Workers can apply for provider approval, manage their profile and availability, receive booking requests, update service progress, track earnings, and view monthly commission billing. Official commission bills are released on the 28th day of each month, with payment proof reviewed by the Kabisig admin team.
+
+Kabisig includes:
+- Customer and worker account flows
+- Service categories and provider profiles
+- Booking requests, acceptance, confirmation, and status tracking
+- Chat and in-app notifications
+- Photo and video uploads for service details
+- Worker registration and commission payment review
+- Reviews, complaints, and admin support workflows
+
+Kabisig is designed for clearer coordination, safer marketplace operations, and more accountable local service delivery.

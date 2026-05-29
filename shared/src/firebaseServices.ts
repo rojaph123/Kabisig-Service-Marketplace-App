@@ -7,6 +7,7 @@ declare const require: (moduleName: string) => any;
 
 import {
   createUserWithEmailAndPassword,
+  fetchSignInMethodsForEmail,
   GoogleAuthProvider,
   getAuth,
   signInWithEmailAndPassword,
@@ -43,7 +44,7 @@ import {
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { deleteObject, getStorage, ref as storageRef } from "firebase/storage";
+import { deleteObject, getDownloadURL, getStorage, ref as storageRef, uploadString } from "firebase/storage";
 import { getFirebaseConfig } from "./firebaseConfig";
 
 // Lazy initialization - initialize Firebase only when first needed
@@ -124,6 +125,7 @@ export function getFirebaseFunctions() {
 
 import {
   AdminAuditLog,
+  AdminRevenueRecord,
   AvailabilitySchedule,
   BookingConflictHistory,
   User,
@@ -148,6 +150,10 @@ import {
   CoverageArea,
   ProviderApprovalStatus,
   PushNotificationToken,
+  WorkerCommissionBill,
+  WorkerFinanceSummary,
+  WorkerPaymentSettings,
+  WorkerRegistrationPayment,
 } from "./types";
 
 function nowIso() {
@@ -190,6 +196,104 @@ function toMediaAttachmentFromUrl(url: string, fallbackName: string, uploadedBy?
 }
 
 const PROVIDER_PORTFOLIO_MAX_PHOTO_BYTES = 20 * 1024 * 1024;
+const WORKER_PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024;
+const WORKER_PAYMENT_IMAGE_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+
+function defaultWorkerPaymentSettings(): WorkerPaymentSettings {
+  const now = nowIso();
+  return {
+    registrationFeeEnabled: true,
+    registrationFeeAmount: 500,
+    activeQrCodeUrl: null,
+    activeQrCodePath: null,
+    paymentMethodName: "GCash QR",
+    paymentInstructions: "Scan the active QR code, pay the exact registration fee, then upload a clear payment screenshot with the reference number.",
+    freeRegistrationPromoEnabled: false,
+    freeRegistrationApprovedWorkerLimit: 50,
+    approvedFreeRegistrationCount: 0,
+    commissionEnabled: true,
+    commissionPercentage: 10,
+    freeBookingsGranted: 5,
+    monthlyBillDueDay: 5,
+    gracePeriodDays: 3,
+    lateSurchargeRate: 5,
+    billingCycle: "monthly",
+    featureActivatedAt: now,
+    updatedAt: now,
+  };
+}
+
+function coerceBooleanSetting(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function coerceNumberSetting(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeWorkerPaymentSettings(
+  data?: Partial<WorkerPaymentSettings>,
+  defaults: WorkerPaymentSettings = defaultWorkerPaymentSettings()
+): WorkerPaymentSettings {
+  const merged = { ...defaults, ...(data || {}) };
+  return {
+    ...merged,
+    registrationFeeEnabled: coerceBooleanSetting(merged.registrationFeeEnabled, defaults.registrationFeeEnabled),
+    registrationFeeAmount: Math.max(0, coerceNumberSetting(merged.registrationFeeAmount, defaults.registrationFeeAmount)),
+    freeRegistrationPromoEnabled: coerceBooleanSetting(merged.freeRegistrationPromoEnabled, defaults.freeRegistrationPromoEnabled),
+    freeRegistrationApprovedWorkerLimit: Math.max(0, coerceNumberSetting(merged.freeRegistrationApprovedWorkerLimit, defaults.freeRegistrationApprovedWorkerLimit)),
+    approvedFreeRegistrationCount: Math.max(0, coerceNumberSetting(merged.approvedFreeRegistrationCount, defaults.approvedFreeRegistrationCount)),
+    commissionEnabled: coerceBooleanSetting(merged.commissionEnabled, defaults.commissionEnabled),
+    commissionPercentage: Math.max(0, coerceNumberSetting(merged.commissionPercentage, defaults.commissionPercentage)),
+    freeBookingsGranted: Math.max(0, coerceNumberSetting(merged.freeBookingsGranted, defaults.freeBookingsGranted)),
+    monthlyBillDueDay: Math.min(28, Math.max(1, coerceNumberSetting(merged.monthlyBillDueDay, defaults.monthlyBillDueDay))),
+    gracePeriodDays: Math.max(0, coerceNumberSetting(merged.gracePeriodDays, defaults.gracePeriodDays)),
+    lateSurchargeRate: Math.max(0, coerceNumberSetting(merged.lateSurchargeRate, defaults.lateSurchargeRate)),
+    billingCycle: "monthly",
+  };
+}
+
+function roundMoney(value: number) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function applyCommissionSurcharge(
+  baseCommissionAmount: number,
+  graceEndsAt: string,
+  lateSurchargeRate: number,
+  now: Date = new Date()
+) {
+  const normalizedBase = roundMoney(baseCommissionAmount);
+  if (normalizedBase <= 0 || !graceEndsAt || new Date(graceEndsAt).getTime() >= now.getTime()) {
+    return {
+      baseCommissionAmount: normalizedBase,
+      surchargeRateApplied: 0,
+      surchargeDaysApplied: 0,
+      surchargeAmount: 0,
+      amountDue: normalizedBase,
+    };
+  }
+
+  const normalizedRate = Math.max(0, Number(lateSurchargeRate || 0));
+  const dayMs = 24 * 60 * 60 * 1000;
+  const overdueDays = Math.max(1, Math.ceil((now.getTime() - new Date(graceEndsAt).getTime()) / dayMs));
+  const surchargeAmount = roundMoney(normalizedRate * overdueDays);
+  return {
+    baseCommissionAmount: normalizedBase,
+    surchargeRateApplied: normalizedRate,
+    surchargeDaysApplied: overdueDays,
+    surchargeAmount,
+    amountDue: roundMoney(normalizedBase + surchargeAmount),
+  };
+}
 
 function assertMediaSize(value: string | MediaAttachment, maxSizeBytes: number, label: string) {
   const sizeBytes = typeof value === "string"
@@ -199,7 +303,7 @@ function assertMediaSize(value: string | MediaAttachment, maxSizeBytes: number, 
     : value.sizeBytes;
 
   if (sizeBytes && sizeBytes > maxSizeBytes) {
-    throw new Error(`${label} must be 20 MB or smaller.`);
+    throw new Error(`${label} must be ${Math.round(maxSizeBytes / 1024 / 1024)} MB or smaller.`);
   }
 }
 
@@ -207,6 +311,14 @@ function assertImageMedia(value: string | MediaAttachment, label: string) {
   const mimeType = typeof value === "string" ? detectMimeTypeFromDataUrl(value) : value.mimeType || "";
   if (mimeType && mimeType !== "application/octet-stream" && !mimeType.startsWith("image/")) {
     throw new Error(`${label} must be an image file.`);
+  }
+}
+
+function assertWorkerPaymentProof(value: string | MediaAttachment, label: string) {
+  assertMediaSize(value, WORKER_PAYMENT_PROOF_MAX_BYTES, label);
+  const mimeType = typeof value === "string" ? detectMimeTypeFromDataUrl(value) : value.mimeType || "";
+  if (mimeType && mimeType !== "application/octet-stream" && !WORKER_PAYMENT_IMAGE_TYPES.has(mimeType.toLowerCase())) {
+    throw new Error(`${label} must be a JPG, JPEG, PNG, or WEBP image.`);
   }
 }
 
@@ -238,29 +350,56 @@ async function persistMediaAttachment(
   }
 
   const mimeType = detectMimeTypeFromDataUrl(normalized.url);
-  const uploadResult = await callFunction<
-    {
-      dataUrl: string;
-      storagePath: string;
-      mimeType: string;
-      fileName: string;
-      uploadedBy?: string;
-      maxSizeBytes?: number;
-    },
-    {
-      url: string;
-      storagePath: string;
-      mimeType?: string;
-      sizeBytes?: number;
+  let uploadResult: {
+    url: string;
+    storagePath: string;
+    mimeType?: string;
+    sizeBytes?: number;
+  };
+
+  try {
+    uploadResult = await callFunction<
+      {
+        dataUrl: string;
+        storagePath: string;
+        mimeType: string;
+        fileName: string;
+        uploadedBy?: string;
+        maxSizeBytes?: number;
+      },
+      {
+        url: string;
+        storagePath: string;
+        mimeType?: string;
+        sizeBytes?: number;
+      }
+    >("uploadMediaAsset", {
+      dataUrl: normalized.url,
+      storagePath,
+      mimeType,
+      fileName: normalized.fileName || fallbackName,
+      uploadedBy,
+      maxSizeBytes,
+    });
+  } catch (error) {
+    if (!storagePath.startsWith("workerPayments/settings/") || !isPermissionDeniedError(error)) {
+      throw error;
     }
-  >("uploadMediaAsset", {
-    dataUrl: normalized.url,
-    storagePath,
-    mimeType,
-    fileName: normalized.fileName || fallbackName,
-    uploadedBy,
-    maxSizeBytes,
-  });
+    const ref = storageRef(getFirebaseStorage(), storagePath);
+    await uploadString(ref, normalized.url, "data_url", {
+      contentType: mimeType,
+      customMetadata: {
+        uploadedBy: uploadedBy || getFirebaseAuth().currentUser?.uid || "",
+        originalFileName: normalized.fileName || fallbackName,
+      },
+    });
+    uploadResult = {
+      url: await getDownloadURL(ref),
+      storagePath,
+      mimeType,
+      sizeBytes: normalized.sizeBytes,
+    };
+  }
 
   return {
     ...normalized,
@@ -454,13 +593,14 @@ const defaultCoverageAreas: CoverageArea[] = [
 
 const marketplaceVisibilityPreset = "2026-05-worker-categories";
 
-async function createRoleProfile(userId: string, fullName: string, role: "customer" | "provider") {
+async function createRoleProfile(userId: string, fullName: string, role: "customer" | "provider", phone?: string) {
+  const normalizedPhone = phone?.trim() || "";
   if (role === "customer") {
     await setDoc(
       doc(getFirestore_(), "customerProfiles", userId),
       {
         userId,
-        phone: "",
+        phone: normalizedPhone,
         addresses: [],
         defaultLocation: "",
         pinpointLocation: "",
@@ -486,7 +626,7 @@ async function createRoleProfile(userId: string, fullName: string, role: "custom
       sampleWorks: [],
       birthday: "",
       age: 0,
-      phone: "",
+      phone: normalizedPhone,
       emergencyContact: "",
       address: "",
       city: "",
@@ -551,7 +691,7 @@ async function upsertUserDocument({
   };
 
   await setDoc(doc(getFirestore_(), "users", uid), sanitizeForFirestore(payload), { merge: true });
-  await createRoleProfile(uid, fullName, role);
+  await createRoleProfile(uid, fullName, role, phone);
 }
 
 // ============================================================================
@@ -567,6 +707,11 @@ export const authService = {
     role: "customer" | "provider",
     phone?: string
   ): Promise<{ user: FirebaseUser; uid: string }> {
+    const existingMethods = await fetchSignInMethodsForEmail(getFirebaseAuth(), email.trim()).catch(() => []);
+    if (existingMethods.length) {
+      throw new Error("auth/email-already-in-use");
+    }
+
     const credential = await createUserWithEmailAndPassword(getFirebaseAuth(), email, password);
     const { user } = credential;
 
@@ -1014,10 +1159,29 @@ export const providerService = {
       emergencyContact: string;
       sampleWorkUrls?: string[];
       availability?: AvailabilitySchedule[];
+      registrationPaymentProofUrl?: string;
+      registrationPaymentReference?: string;
+      registrationPaymentDate?: string;
+      registrationPaymentMethod?: string;
     }
   ): Promise<string> {
     const applicationId = `app-${Date.now()}`;
-    const [profilePhoto, validId, permitCertificate, sampleWorks] = await Promise.all([
+    const settings = await workerPaymentService.getSettings();
+    const promoFree =
+      settings.freeRegistrationPromoEnabled &&
+      settings.approvedFreeRegistrationCount < settings.freeRegistrationApprovedWorkerLimit;
+    const registrationFeeRequired = settings.registrationFeeEnabled && !promoFree;
+    if (registrationFeeRequired && !onboardingData.registrationPaymentProofUrl) {
+      throw new Error("Registration payment proof is required before submitting your worker application.");
+    }
+    if (registrationFeeRequired && !onboardingData.registrationPaymentReference?.trim()) {
+      throw new Error("Payment reference number is required before submitting your worker application.");
+    }
+    if (registrationFeeRequired && !onboardingData.registrationPaymentDate) {
+      throw new Error("Payment date is required before submitting your worker application.");
+    }
+
+    const [profilePhoto, validId, permitCertificate, sampleWorks, registrationProof] = await Promise.all([
       mediaService.uploadMedia(
         onboardingData.profilePhotoDriveLink,
         `providerDocuments/${userId}/profile`,
@@ -1037,6 +1201,13 @@ export const providerService = {
         userId
       ),
       mediaService.uploadMany(onboardingData.sampleWorkUrls || [], `providerDocuments/${userId}/sample-works`, userId),
+      registrationFeeRequired && onboardingData.registrationPaymentProofUrl
+        ? workerPaymentService.uploadPaymentProof(
+            onboardingData.registrationPaymentProofUrl,
+            `workerPayments/registration/${userId}/${applicationId}`,
+            userId
+          )
+        : Promise.resolve(null),
     ]);
 
     const documentUrls: UploadedDocument[] = [
@@ -1098,7 +1269,44 @@ export const providerService = {
       approvalStatus: "Pending Approval",
       availability: onboardingData.availability || undefined,
       moderation: { status: "active" },
+      financialStatus: {
+        registrationPaymentStatus: registrationFeeRequired ? "Submitted" : "Waived",
+        freeBookingsGranted: settings.freeBookingsGranted,
+        freeBookingsUsed: 0,
+        freeBookingsRemaining: settings.freeBookingsGranted,
+        restrictedFromAcceptingBookings: false,
+        hasOverdueCommission: false,
+        updatedAt: nowIso(),
+      },
     } as Partial<ProviderProfile> & { termsAcceptedAt?: string });
+
+    const registrationFeeAmount = registrationFeeRequired
+      ? (Number(settings.registrationFeeAmount) > 0 ? Number(settings.registrationFeeAmount) : 500)
+      : 0;
+    if (registrationFeeRequired && (!registrationProof?.url || !isFirestoreSafeUrl(registrationProof.url))) {
+      throw new Error("Payment proof upload did not finish. Please upload the proof image again before submitting.");
+    }
+    const registrationPaymentId = `registration-payment-${applicationId}`;
+    const registrationPayment: WorkerRegistrationPayment = sanitizeForFirestore({
+      paymentId: registrationPaymentId,
+      applicationId,
+      providerId: userId,
+      userId,
+      required: registrationFeeRequired,
+      waived: !registrationFeeRequired,
+      waiverReason: !registrationFeeRequired ? (promoFree ? "promo" : "free_registration") : undefined,
+      amount: registrationFeeAmount,
+      methodName: onboardingData.registrationPaymentMethod?.trim() || settings.paymentMethodName,
+      instructionsSnapshot: settings.paymentInstructions,
+      status: registrationFeeRequired ? "Submitted" : "Waived",
+      proofImageUrl: registrationProof?.url,
+      proofImagePath: registrationProof?.storagePath,
+      referenceNumber: onboardingData.registrationPaymentReference?.trim(),
+      paymentDate: onboardingData.registrationPaymentDate || undefined,
+      submittedAt: registrationFeeRequired ? nowIso() : undefined,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    } as WorkerRegistrationPayment);
 
     const application: ProviderApplication = sanitizeForFirestore({
       applicationId,
@@ -1106,6 +1314,28 @@ export const providerService = {
       submittedAt: new Date().toISOString(),
       status: "Pending Approval",
       documentUrls,
+      registrationPaymentId,
+      registrationPaymentStatus: registrationPayment.status,
+      registrationFeeRequired,
+      registrationPaymentSnapshot: {
+        paymentId: registrationPayment.paymentId,
+        applicationId: registrationPayment.applicationId,
+        providerId: registrationPayment.providerId,
+        userId: registrationPayment.userId,
+        required: registrationPayment.required,
+        waived: registrationPayment.waived,
+        waiverReason: registrationPayment.waiverReason,
+        amount: registrationPayment.amount,
+        methodName: registrationPayment.methodName,
+        status: registrationPayment.status,
+        proofImageUrl: registrationPayment.proofImageUrl,
+        proofImagePath: registrationPayment.proofImagePath,
+        referenceNumber: registrationPayment.referenceNumber,
+        paymentDate: registrationPayment.paymentDate,
+        submittedAt: registrationPayment.submittedAt,
+        createdAt: registrationPayment.createdAt,
+        updatedAt: registrationPayment.updatedAt,
+      },
     } as ProviderApplication);
     try {
       const result = await callFunction<
@@ -1114,6 +1344,7 @@ export const providerService = {
           userId: string;
           application: ProviderApplication;
           providerProfileUpdate: Partial<ProviderProfile> & { termsAcceptedAt?: string };
+          registrationPayment: WorkerRegistrationPayment;
         },
         { applicationId: string }
       >("submitProviderApplication", {
@@ -1121,6 +1352,7 @@ export const providerService = {
         userId,
         application,
         providerProfileUpdate,
+        registrationPayment,
       });
 
       return result.applicationId;
@@ -1131,6 +1363,26 @@ export const providerService = {
 
       const batch = writeBatch(getFirestore_());
       batch.set(doc(getFirestore_(), "providerApplications", applicationId), application, { merge: true });
+      batch.set(doc(getFirestore_(), "workerRegistrationPayments", registrationPaymentId), registrationPayment, { merge: true });
+      batch.set(doc(getFirestore_(), "workerFinanceSummaries", userId), sanitizeForFirestore({
+        providerId: userId,
+        userId,
+        registrationPaymentStatus: registrationPayment.status,
+        registrationPaymentId,
+        totalFreeBookingsGranted: settings.freeBookingsGranted,
+        freeBookingsUsed: 0,
+        freeBookingsRemaining: settings.freeBookingsGranted,
+        totalCompletedPaidBookings: 0,
+        totalIncome: 0,
+        totalCommissionableBookings: 0,
+        totalCommissionPaid: 0,
+        totalCommissionPending: 0,
+        totalCommissionOverdue: 0,
+        hasOverdueCommission: false,
+        restrictedFromAcceptingBookings: false,
+        featureActivatedAt: settings.featureActivatedAt,
+        updatedAt: nowIso(),
+      } as WorkerFinanceSummary), { merge: true });
       batch.set(
         doc(getFirestore_(), "providerProfiles", userId),
         sanitizeForFirestore({
@@ -1549,8 +1801,31 @@ function buildBookingSlotId(providerId: string, scheduledDate: string, scheduled
     .replace(/-+/g, "-");
 }
 
+function buildCustomerBookingSlotId(customerId: string, scheduledDate: string, scheduledTime: string) {
+  return `${customerId}_${scheduledDate}_${scheduledTime}`
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/-+/g, "-");
+}
+
 function shouldReleaseBookingSlot(status?: Booking["status"]) {
   return status === "Cancelled" || status === "Completed";
+}
+
+type BookingSlotConflictCode = "BOOKING_SLOT_CONFLICT" | "CUSTOMER_BOOKING_SLOT_CONFLICT";
+
+function createSlotConflict(code: BookingSlotConflictCode, conflictingBookingId?: string) {
+  const error = new Error(code) as Error & { conflictingBookingId?: string };
+  error.conflictingBookingId = conflictingBookingId;
+  return error;
+}
+
+function isSameSlotBooking(
+  leftDate?: string,
+  leftTime?: string,
+  rightDate?: string,
+  rightTime?: string
+) {
+  return Boolean(leftDate && leftTime && rightDate && rightTime && leftDate === rightDate && leftTime === rightTime);
 }
 
 // ============================================================================
@@ -1560,6 +1835,12 @@ function shouldReleaseBookingSlot(status?: Booking["status"]) {
 export const bookingService = {
   // Create booking
   async createBooking(bookingData: Omit<Booking, "bookingId">): Promise<string> {
+    if (bookingData.providerId) {
+      const restriction = await workerPaymentService.canWorkerAcceptBookings(bookingData.providerId);
+      if (!restriction.allowed) {
+        throw new Error("This worker cannot accept bookings right now because their monthly admin payment is overdue. Please choose another worker or try again after they settle the payment.");
+      }
+    }
     const bookingId = `booking-${Date.now()}`;
     const attachmentItems = bookingData.attachmentItems?.length
       ? bookingData.attachmentItems
@@ -1585,14 +1866,18 @@ export const bookingService = {
 
     if (bookingData.scheduledDate && bookingData.scheduledTime) {
       const slotId = buildBookingSlotId(bookingData.providerId, bookingData.scheduledDate, bookingData.scheduledTime);
+      const customerSlotId = buildCustomerBookingSlotId(bookingData.customerId, bookingData.scheduledDate, bookingData.scheduledTime);
       try {
         await runTransaction(getFirestore_(), async (transaction) => {
           const slotRef = doc(getFirestore_(), "bookingSlots", slotId);
+          const customerSlotRef = doc(getFirestore_(), "customerBookingSlots", customerSlotId);
           const slotSnap = await transaction.get(slotRef);
+          const customerSlotSnap = await transaction.get(customerSlotRef);
           if (slotSnap.exists()) {
-            const conflictError = new Error("BOOKING_SLOT_CONFLICT") as Error & { conflictingBookingId?: string };
-            conflictError.conflictingBookingId = slotSnap.data()?.bookingId as string | undefined;
-            throw conflictError;
+            throw createSlotConflict("BOOKING_SLOT_CONFLICT", slotSnap.data()?.bookingId as string | undefined);
+          }
+          if (customerSlotSnap.exists()) {
+            throw createSlotConflict("CUSTOMER_BOOKING_SLOT_CONFLICT", customerSlotSnap.data()?.bookingId as string | undefined);
           }
           transaction.set(doc(getFirestore_(), "bookings", bookingId), payload);
           transaction.set(slotRef, {
@@ -1603,21 +1888,37 @@ export const bookingService = {
             scheduledTime: bookingData.scheduledTime,
             createdAt: nowIso(),
           });
+          transaction.set(customerSlotRef, {
+            slotId: customerSlotId,
+            bookingId,
+            customerId: bookingData.customerId,
+            providerId: bookingData.providerId,
+            scheduledDate: bookingData.scheduledDate,
+            scheduledTime: bookingData.scheduledTime,
+            createdAt: nowIso(),
+          });
         });
       } catch (error) {
-        if (error instanceof Error && error.message === "BOOKING_SLOT_CONFLICT") {
+        if (error instanceof Error && (error.message === "BOOKING_SLOT_CONFLICT" || error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT")) {
           const slotConflict = error as Error & { conflictingBookingId?: string };
           await bookingConflictService.logConflict({
             providerId: bookingData.providerId,
+            customerId: bookingData.customerId,
             bookingId,
             requestedDate: bookingData.scheduledDate,
             requestedTime: bookingData.scheduledTime,
             conflictingBookingId: slotConflict.conflictingBookingId,
             conflictingScheduledAt: bookingData.scheduledAt,
             resolution: "rejected",
-            reason: "Requested booking slot is already reserved.",
+            reason: error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT"
+              ? "Customer already has another booking at the requested date and time."
+              : "Requested booking slot is already reserved.",
           });
-          throw new Error("That time slot has just been taken. Please choose another available time.");
+          throw new Error(
+            error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT"
+              ? "You already have another booking at this date and time. Please choose another slot."
+              : "That time slot has just been taken. Please choose another available time."
+          );
         }
         throw error;
       }
@@ -1652,12 +1953,35 @@ export const bookingService = {
 
   // Update booking
   async updateBooking(bookingId: string, data: Partial<Booking>): Promise<void> {
-    if (data.status && Object.keys(data).every((key) => key === "status")) {
+    const current = await this.getBookingById(bookingId);
+    if (data.status === "Accepted") {
+      const providerId = data.providerId || current?.providerId;
+      if (providerId) {
+        const restriction = await workerPaymentService.canWorkerAcceptBookings(providerId);
+        if (!restriction.allowed) {
+          throw new Error(restriction.reason || "Settle your overdue admin payment before accepting new bookings.");
+        }
+      }
+    }
+    if (data.status === "On the Way" && !current?.customerAcceptanceConfirmedAt) {
+      throw new Error("The customer must confirm the accepted booking before you can mark yourself as On the Way.");
+    }
+    if (data.status) {
       try {
         await callFunction<{ bookingId: string; status: Booking["status"] }, { ok: boolean }>("updateBookingStatus", {
           bookingId,
           status: data.status,
         });
+        const extraPayload = Object.fromEntries(
+          Object.entries(data).filter(([key]) => !["status", "workerAcceptedAt", "statusHistory"].includes(key))
+        ) as Partial<Booking>;
+        if (!Object.keys(extraPayload).length) {
+          return;
+        }
+        await updateDoc(doc(getFirestore_(), "bookings", bookingId), sanitizeForFirestore({
+          ...extraPayload,
+          updatedAt: new Date().toISOString(),
+        }));
         return;
       } catch (error) {
         if (!isCallableUnavailableError(error)) {
@@ -1666,7 +1990,6 @@ export const bookingService = {
       }
     }
 
-    const current = await this.getBookingById(bookingId);
     const nextStatusHistory =
       data.status && current?.status !== data.status
         ? [
@@ -1686,6 +2009,7 @@ export const bookingService = {
     });
 
     const slotProviderId = current?.providerId || data.providerId;
+    const slotCustomerId = current?.customerId || data.customerId;
     const slotDate = current?.scheduledDate || data.scheduledDate;
     const slotTime = current?.scheduledTime || data.scheduledTime;
     const nextStatus = data.status || current?.status;
@@ -1693,6 +2017,10 @@ export const bookingService = {
     if (slotProviderId && slotDate && slotTime && shouldReleaseBookingSlot(nextStatus)) {
       const slotId = buildBookingSlotId(slotProviderId, slotDate, slotTime);
       await deleteDoc(doc(getFirestore_(), "bookingSlots", slotId));
+      if (slotCustomerId) {
+        const customerSlotId = buildCustomerBookingSlotId(slotCustomerId, slotDate, slotTime);
+        await deleteDoc(doc(getFirestore_(), "customerBookingSlots", customerSlotId));
+      }
     }
   },
 
@@ -1817,35 +2145,117 @@ export const bookingChangeRequestService = {
     if (!requestSnap.exists()) throw new Error("Change request not found");
 
     const request = requestSnap.data() as BookingChangeRequest;
-    const batch = writeBatch(getFirestore_());
-    batch.set(
-      requestRef,
-      sanitizeForFirestore({
-        status,
-        resolvedBy: resolverId,
-        resolvedAt: nowIso(),
-        updatedAt: nowIso(),
-        adminNotes: adminNotes?.trim() || request.adminNotes || "",
-      }),
-      { merge: true }
-    );
+    const bookingSnap = await getDoc(doc(getFirestore_(), "bookings", request.bookingId));
+    const existingBooking = bookingSnap.exists() ? (bookingSnap.data() as Booking) : null;
+    const bookingRef = doc(getFirestore_(), "bookings", request.bookingId);
 
-    if (status === "Approved") {
+    await runTransaction(getFirestore_(), async (transaction) => {
+      const bookingSnap = await transaction.get(bookingRef);
+      if (!bookingSnap.exists()) throw new Error("Booking not found");
+      const booking = bookingSnap.data() as Booking;
+
+      transaction.set(
+        requestRef,
+        sanitizeForFirestore({
+          status,
+          resolvedBy: resolverId,
+          resolvedAt: nowIso(),
+          updatedAt: nowIso(),
+          adminNotes: adminNotes?.trim() || request.adminNotes || "",
+        }),
+        { merge: true }
+      );
+
+      if (status !== "Approved") {
+        return;
+      }
+
       const bookingUpdate: Partial<Booking> = {
         updatedAt: nowIso(),
       };
+
       if (request.type === "cancellation") {
         bookingUpdate.status = "Cancelled";
       }
-      if (request.type === "reschedule") {
-        bookingUpdate.scheduledDate = request.requestedDate || undefined;
-        bookingUpdate.scheduledTime = request.requestedTime || undefined;
-        bookingUpdate.scheduledAt = request.requestedScheduledAt || request.currentScheduledAt || undefined;
-      }
-      batch.set(doc(getFirestore_(), "bookings", request.bookingId), sanitizeForFirestore(bookingUpdate), { merge: true });
-    }
 
-    await batch.commit();
+      if (request.type === "reschedule") {
+        const requestedDate = request.requestedDate || booking.scheduledDate;
+        const requestedTime = request.requestedTime || booking.scheduledTime;
+        const requestedScheduledAt = request.requestedScheduledAt || request.currentScheduledAt || booking.scheduledAt;
+
+        if (!isSameSlotBooking(booking.scheduledDate, booking.scheduledTime, requestedDate, requestedTime) && requestedDate && requestedTime) {
+          const nextProviderSlotId = buildBookingSlotId(booking.providerId, requestedDate, requestedTime);
+          const nextCustomerSlotId = buildCustomerBookingSlotId(booking.customerId, requestedDate, requestedTime);
+          const nextProviderSlotRef = doc(getFirestore_(), "bookingSlots", nextProviderSlotId);
+          const nextCustomerSlotRef = doc(getFirestore_(), "customerBookingSlots", nextCustomerSlotId);
+          const [nextProviderSlotSnap, nextCustomerSlotSnap] = await Promise.all([
+            transaction.get(nextProviderSlotRef),
+            transaction.get(nextCustomerSlotRef),
+          ]);
+
+          if (nextProviderSlotSnap.exists()) {
+            throw createSlotConflict("BOOKING_SLOT_CONFLICT", nextProviderSlotSnap.data()?.bookingId as string | undefined);
+          }
+          if (nextCustomerSlotSnap.exists()) {
+            throw createSlotConflict("CUSTOMER_BOOKING_SLOT_CONFLICT", nextCustomerSlotSnap.data()?.bookingId as string | undefined);
+          }
+
+          transaction.set(nextProviderSlotRef, {
+            slotId: nextProviderSlotId,
+            bookingId: booking.bookingId,
+            providerId: booking.providerId,
+            scheduledDate: requestedDate,
+            scheduledTime: requestedTime,
+            createdAt: nowIso(),
+          });
+          transaction.set(nextCustomerSlotRef, {
+            slotId: nextCustomerSlotId,
+            bookingId: booking.bookingId,
+            customerId: booking.customerId,
+            providerId: booking.providerId,
+            scheduledDate: requestedDate,
+            scheduledTime: requestedTime,
+            createdAt: nowIso(),
+          });
+
+          if (booking.scheduledDate && booking.scheduledTime) {
+            const currentProviderSlotId = buildBookingSlotId(booking.providerId, booking.scheduledDate, booking.scheduledTime);
+            const currentCustomerSlotId = buildCustomerBookingSlotId(booking.customerId, booking.scheduledDate, booking.scheduledTime);
+            transaction.delete(doc(getFirestore_(), "bookingSlots", currentProviderSlotId));
+            transaction.delete(doc(getFirestore_(), "customerBookingSlots", currentCustomerSlotId));
+          }
+        }
+
+        bookingUpdate.scheduledDate = requestedDate || undefined;
+        bookingUpdate.scheduledTime = requestedTime || undefined;
+        bookingUpdate.scheduledAt = requestedScheduledAt || undefined;
+      }
+
+      transaction.set(bookingRef, sanitizeForFirestore(bookingUpdate), { merge: true });
+    }).catch(async (error) => {
+      if (error instanceof Error && (error.message === "BOOKING_SLOT_CONFLICT" || error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT")) {
+        const conflictingBookingId = (error as Error & { conflictingBookingId?: string }).conflictingBookingId;
+        await bookingConflictService.logConflict({
+          providerId: existingBooking?.providerId || request.targetUserId,
+          customerId: existingBooking?.customerId,
+          bookingId: request.bookingId,
+          requestedDate: request.requestedDate || "",
+          requestedTime: request.requestedTime || "",
+          conflictingBookingId,
+          conflictingScheduledAt: request.requestedScheduledAt,
+          resolution: "rejected",
+          reason: error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT"
+            ? "Customer already has another booking at the requested date and time."
+            : "Requested reschedule slot is already reserved.",
+        });
+        throw new Error(
+          error.message === "CUSTOMER_BOOKING_SLOT_CONFLICT"
+            ? "The customer already has another booking at that date and time."
+            : "That reschedule time slot is already reserved."
+        );
+      }
+      throw error;
+    });
   },
 };
 
@@ -1954,12 +2364,733 @@ export const paymentService = {
 };
 
 // ============================================================================
+// WORKER PAYMENT / ADMIN REVENUE SERVICES
+// ============================================================================
+
+function monthKeyFromDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function commissionPreviewCycleBounds(date: Date) {
+  const year = date.getFullYear();
+  const monthIndex = date.getMonth();
+  const day = date.getDate();
+
+  if (day >= 29) {
+    return {
+      start: new Date(year, monthIndex, 29, 0, 0, 0, 0),
+      end: new Date(year, monthIndex + 1, 28, 23, 59, 59, 999),
+    };
+  }
+
+  return {
+    start: new Date(year, monthIndex - 1, 29, 0, 0, 0, 0),
+    end: new Date(year, monthIndex, 28, 23, 59, 59, 999),
+  };
+}
+
+function commissionOfficialCycleBounds(date: Date) {
+  const year = date.getFullYear();
+  const monthIndex = date.getMonth();
+  const day = date.getDate();
+
+  if (day >= 28) {
+    return {
+      start: new Date(year, monthIndex - 1, 29, 0, 0, 0, 0),
+      end: new Date(year, monthIndex, 28, 23, 59, 59, 999),
+    };
+  }
+
+  return {
+    start: new Date(year, monthIndex - 2, 29, 0, 0, 0, 0),
+    end: new Date(year, monthIndex - 1, 28, 23, 59, 59, 999),
+  };
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+export const workerPaymentService = {
+  async getSettings(): Promise<WorkerPaymentSettings> {
+    const ref = doc(getFirestore_(), "platformSettings", "workerPayments");
+    const defaults = defaultWorkerPaymentSettings();
+    try {
+      const snapshot = await getDoc(ref);
+      if (snapshot.exists()) {
+        return normalizeWorkerPaymentSettings(snapshot.data() as Partial<WorkerPaymentSettings>, defaults);
+      }
+      await setDoc(ref, sanitizeForFirestore(defaults), { merge: true });
+    } catch (error) {
+      if (!isPermissionDeniedError(error)) {
+        throw error;
+      }
+    }
+    return defaults;
+  },
+
+  async updateSettings(data: Partial<WorkerPaymentSettings>, adminId: string): Promise<void> {
+    const current = await this.getSettings();
+    const next = sanitizeForFirestore(normalizeWorkerPaymentSettings({
+      ...current,
+      ...data,
+      updatedBy: adminId,
+      updatedAt: nowIso(),
+    }, current));
+    try {
+      await callFunction<Record<string, unknown>, WorkerPaymentSettings>("updateWorkerPaymentSettings", next as unknown as Record<string, unknown>);
+      return;
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+    }
+    await setDoc(doc(getFirestore_(), "platformSettings", "workerPayments"), next, { merge: true });
+  },
+
+  async backfillExistingWorkerFinance(adminId: string): Promise<{ created: number }> {
+    try {
+      return await callFunction<{ adminId: string }, { created: number }>("backfillExistingWorkerFinance", { adminId });
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+    }
+
+    const settings = await this.getSettings();
+    const providers = await providerService.getAllProviderProfiles();
+    let created = 0;
+    await Promise.all(providers.filter((profile) => profile.isApproved).map(async (profile) => {
+      const summaryRef = doc(getFirestore_(), "workerFinanceSummaries", profile.userId);
+      const summarySnap = await getDoc(summaryRef);
+      if (summarySnap.exists()) return;
+      const summary: WorkerFinanceSummary = {
+        providerId: profile.userId,
+        userId: profile.userId,
+        registrationPaymentStatus: "Waived",
+        totalFreeBookingsGranted: settings.freeBookingsGranted,
+        freeBookingsUsed: 0,
+        freeBookingsRemaining: settings.freeBookingsGranted,
+        totalCompletedPaidBookings: 0,
+        totalIncome: 0,
+        totalCommissionableBookings: 0,
+        totalCommissionPaid: 0,
+        totalCommissionPending: 0,
+        totalCommissionOverdue: 0,
+        hasOverdueCommission: false,
+        restrictedFromAcceptingBookings: false,
+        featureActivatedAt: settings.featureActivatedAt,
+        updatedAt: nowIso(),
+      };
+      await setDoc(summaryRef, sanitizeForFirestore(summary), { merge: true });
+      await setDoc(doc(getFirestore_(), "providerProfiles", profile.userId), sanitizeForFirestore({
+        financialStatus: {
+          registrationPaymentStatus: "Waived",
+          freeBookingsGranted: settings.freeBookingsGranted,
+          freeBookingsUsed: 0,
+          freeBookingsRemaining: settings.freeBookingsGranted,
+          restrictedFromAcceptingBookings: false,
+          hasOverdueCommission: false,
+          updatedAt: nowIso(),
+        },
+      }), { merge: true });
+      created += 1;
+    }));
+    await adminAuditService.logAction({
+      actorId: adminId,
+      actorRole: "admin",
+      action: "worker_payment_settings_updated",
+      targetCollection: "workerFinanceSummaries",
+      targetId: "backfill",
+      summary: "Backfilled existing worker finance summaries.",
+      metadata: { created },
+    }).catch(() => undefined);
+    return { created };
+  },
+
+  async uploadPaymentProof(value: string | MediaAttachment, pathPrefix: string, uploadedBy: string): Promise<MediaAttachment> {
+    assertWorkerPaymentProof(value, "Payment proof");
+    return persistMediaAttachment(
+      value,
+      `${pathPrefix}/${Date.now()}-${toStorageSafeSegment(typeof value === "string" ? "proof" : value.fileName || value.id || "proof")}`,
+      "payment-proof",
+      uploadedBy,
+      WORKER_PAYMENT_PROOF_MAX_BYTES
+    );
+  },
+
+  async uploadQrCode(value: string | MediaAttachment, adminId: string): Promise<MediaAttachment> {
+    assertWorkerPaymentProof(value, "Payment QR code");
+    const currentUserId = getFirebaseAuth().currentUser?.uid || adminId;
+    return persistMediaAttachment(
+      value,
+      `workerPayments/settings/qr-${Date.now()}`,
+      "payment-qr-code",
+      currentUserId,
+      WORKER_PAYMENT_PROOF_MAX_BYTES
+    );
+  },
+
+  async getRegistrationPayment(paymentId?: string): Promise<WorkerRegistrationPayment | null> {
+    if (!paymentId) return null;
+    const snapshot = await getDoc(doc(getFirestore_(), "workerRegistrationPayments", paymentId));
+    return snapshot.exists() ? (snapshot.data() as WorkerRegistrationPayment) : null;
+  },
+
+  async getRegistrationPaymentByProvider(providerId: string): Promise<WorkerRegistrationPayment | null> {
+    const snapshot = await getDocs(query(collection(getFirestore_(), "workerRegistrationPayments"), where("userId", "==", providerId)));
+    return snapshot.docs
+      .map((entry) => entry.data() as WorkerRegistrationPayment)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] || null;
+  },
+
+  async reviewRegistrationPayment(paymentId: string, adminId: string, status: "Approved" | "Rejected", adminRemarks?: string): Promise<void> {
+    if (status === "Rejected" && !adminRemarks?.trim()) {
+      throw new Error("Admin remarks are required when rejecting a payment proof.");
+    }
+    try {
+      await callFunction<{ paymentId: string; status: "Approved" | "Rejected"; adminRemarks?: string }, { ok: boolean }>(
+        "reviewWorkerRegistrationPayment",
+        { paymentId, status, adminRemarks: adminRemarks?.trim() }
+      );
+      return;
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+    }
+
+    let payment = await this.getRegistrationPayment(paymentId);
+    if (!payment) {
+      const applicationSnapshot = await getDocs(query(collection(getFirestore_(), "providerApplications"), where("registrationPaymentId", "==", paymentId)));
+      const application = applicationSnapshot.docs[0]?.data() as ProviderApplication | undefined;
+      const snapshotPayment = application?.registrationPaymentSnapshot;
+      if (snapshotPayment?.paymentId) {
+        payment = sanitizeForFirestore({
+          ...snapshotPayment,
+          paymentId,
+          applicationId: snapshotPayment.applicationId || application?.applicationId,
+          providerId: snapshotPayment.providerId || application?.userId,
+          userId: snapshotPayment.userId || application?.userId,
+          required: snapshotPayment.required ?? application?.registrationFeeRequired ?? true,
+          waived: snapshotPayment.waived ?? false,
+          amount: Number(snapshotPayment.amount || 0),
+          methodName: snapshotPayment.methodName || "Manual payment",
+          status: snapshotPayment.status || "Submitted",
+          createdAt: snapshotPayment.createdAt || nowIso(),
+          updatedAt: snapshotPayment.updatedAt || nowIso(),
+        } as WorkerRegistrationPayment);
+      }
+    }
+    if (!payment) {
+      throw new Error("Registration payment record is missing. Ask the worker to resubmit the payment proof, then refresh this page.");
+    }
+    if (status === "Approved" && payment.required && (!payment.proofImageUrl || !payment.referenceNumber || !payment.paymentDate)) {
+      throw new Error("This payment cannot be approved because its proof image, reference number, or payment date is missing.");
+    }
+    const batch = writeBatch(getFirestore_());
+    batch.set(doc(getFirestore_(), "workerRegistrationPayments", paymentId), sanitizeForFirestore({
+      ...payment,
+      status,
+      reviewedBy: adminId,
+      reviewedAt: nowIso(),
+      adminRemarks: adminRemarks?.trim() || "",
+      updatedAt: nowIso(),
+    }), { merge: true });
+    batch.set(doc(getFirestore_(), "providerApplications", payment.applicationId), sanitizeForFirestore({
+      registrationPaymentStatus: status,
+      registrationPaymentSnapshot: {
+        ...payment,
+        status,
+        reviewedBy: adminId,
+        reviewedAt: nowIso(),
+        adminRemarks: adminRemarks?.trim() || "",
+        updatedAt: nowIso(),
+      },
+    }), { merge: true });
+    batch.set(doc(getFirestore_(), "providerProfiles", payment.providerId), {
+      financialStatus: {
+        registrationPaymentStatus: status,
+        updatedAt: nowIso(),
+      },
+    }, { merge: true });
+    if (status === "Approved" && payment.amount > 0) {
+      const revenueId = `revenue-registration-${paymentId}`;
+      batch.set(doc(getFirestore_(), "adminRevenueRecords", revenueId), sanitizeForFirestore({
+        revenueId,
+        sourceType: "registration_fee",
+        sourcePaymentId: paymentId,
+        providerId: payment.providerId,
+        userId: payment.userId,
+        amount: payment.amount,
+        status: "Approved",
+        approvedBy: adminId,
+        approvedAt: nowIso(),
+        createdAt: nowIso(),
+      } as AdminRevenueRecord), { merge: true });
+    }
+    await batch.commit();
+  },
+
+  async getFinanceSummary(providerId: string): Promise<WorkerFinanceSummary> {
+    const snapshot = await getDoc(doc(getFirestore_(), "workerFinanceSummaries", providerId));
+    if (snapshot.exists()) {
+      return snapshot.data() as WorkerFinanceSummary;
+    }
+    return this.ensureFinanceSummary(providerId);
+  },
+
+  async ensureFinanceSummary(providerId: string): Promise<WorkerFinanceSummary> {
+    const settings = await this.getSettings();
+    const registration = await this.getRegistrationPaymentByProvider(providerId);
+    const profile = await userService.getProviderProfile(providerId);
+    const existingWorker = profile?.isApproved && !registration;
+    const summary: WorkerFinanceSummary = {
+      providerId,
+      userId: providerId,
+      registrationPaymentStatus: existingWorker ? "Waived" : registration?.status || "Pending",
+      registrationPaymentId: registration?.paymentId,
+      totalFreeBookingsGranted: settings.freeBookingsGranted,
+      freeBookingsUsed: 0,
+      freeBookingsRemaining: settings.freeBookingsGranted,
+      totalCompletedPaidBookings: 0,
+      totalIncome: 0,
+      totalCommissionableBookings: 0,
+      totalCommissionPaid: 0,
+      totalCommissionPending: 0,
+      totalCommissionOverdue: 0,
+      hasOverdueCommission: false,
+      restrictedFromAcceptingBookings: false,
+      featureActivatedAt: settings.featureActivatedAt,
+      updatedAt: nowIso(),
+    };
+    try {
+      await setDoc(doc(getFirestore_(), "workerFinanceSummaries", providerId), sanitizeForFirestore(summary), { merge: true });
+      if (existingWorker) {
+        await setDoc(doc(getFirestore_(), "providerProfiles", providerId), {
+          financialStatus: {
+            registrationPaymentStatus: "Waived",
+            freeBookingsGranted: settings.freeBookingsGranted,
+            freeBookingsUsed: 0,
+            freeBookingsRemaining: settings.freeBookingsGranted,
+            restrictedFromAcceptingBookings: false,
+            hasOverdueCommission: false,
+            updatedAt: nowIso(),
+          },
+        }, { merge: true });
+      }
+    } catch {
+      // Non-admin clients can still use the safe default locally when a server-created summary does not exist yet.
+    }
+    return summary;
+  },
+
+  async getCommissionBills(providerId: string): Promise<WorkerCommissionBill[]> {
+    const snapshot = await getDocs(query(collection(getFirestore_(), "workerCommissionBills"), where("userId", "==", providerId)));
+    return snapshot.docs
+      .map((entry) => entry.data() as WorkerCommissionBill)
+      .sort((left, right) => right.cycleEnd.localeCompare(left.cycleEnd));
+  },
+
+  async getCommissionBillById(providerId: string, billId: string): Promise<WorkerCommissionBill | null> {
+    const snapshot = await getDoc(doc(getFirestore_(), "workerCommissionBills", billId));
+    if (!snapshot.exists()) return null;
+    const bill = snapshot.data() as WorkerCommissionBill;
+    if (bill.userId !== providerId && bill.providerId !== providerId) return null;
+    return bill;
+  },
+
+  async releaseCurrentCommissionBill(providerId: string): Promise<WorkerCommissionBill | null> {
+    return callFunction<{ providerId: string }, WorkerCommissionBill | null>(
+      "releaseCurrentWorkerCommissionBill",
+      { providerId }
+    );
+  },
+
+  async getAllCommissionBills(): Promise<WorkerCommissionBill[]> {
+    const snapshot = await getDocs(collection(getFirestore_(), "workerCommissionBills"));
+    return snapshot.docs.map((entry) => entry.data() as WorkerCommissionBill);
+  },
+
+  async getAllRegistrationPayments(): Promise<WorkerRegistrationPayment[]> {
+    const snapshot = await getDocs(collection(getFirestore_(), "workerRegistrationPayments"));
+    return snapshot.docs.map((entry) => entry.data() as WorkerRegistrationPayment);
+  },
+
+  async getAllRevenueRecords(): Promise<AdminRevenueRecord[]> {
+    const snapshot = await getDocs(collection(getFirestore_(), "adminRevenueRecords"));
+    return snapshot.docs.map((entry) => entry.data() as AdminRevenueRecord);
+  },
+
+  async submitCommissionPayment(
+    billId: string,
+    providerId: string,
+    data: { proofImage: string | MediaAttachment; referenceNumber: string; paymentDate: string; methodName?: string }
+  ): Promise<void> {
+    const referenceNumber = data.referenceNumber.trim();
+    if (!referenceNumber) throw new Error("Payment reference number is required.");
+    if (referenceNumber.length < 4) throw new Error("Payment reference number is too short.");
+    if (!data.paymentDate) throw new Error("Payment date is required.");
+    const bill = await this.getCommissionBillById(providerId, billId);
+    if (!bill) throw new Error("Commission bill not found.");
+    if (bill.status === "Submitted") throw new Error("This commission payment is already waiting for admin approval.");
+    if (["Approved", "Waived", "Not Required"].includes(bill.status)) {
+      throw new Error("This commission bill no longer needs payment submission.");
+    }
+    if (Number(bill.amountDue || 0) <= 0) {
+      throw new Error("This commission bill does not have a payable balance.");
+    }
+    const paymentDate = new Date(data.paymentDate);
+    if (!Number.isFinite(paymentDate.getTime())) {
+      throw new Error("Payment date is invalid.");
+    }
+    const today = new Date();
+    if (paymentDate.getTime() > today.getTime()) {
+      throw new Error("Payment date cannot be in the future.");
+    }
+    const proof = await this.uploadPaymentProof(data.proofImage, `workerPayments/commission/${providerId}/${billId}`, providerId);
+    await setDoc(doc(getFirestore_(), "workerCommissionBills", billId), sanitizeForFirestore({
+      status: "Submitted",
+      proofImageUrl: proof.url,
+      proofImagePath: proof.storagePath,
+      referenceNumber,
+      paymentDate: data.paymentDate,
+      submittedAt: nowIso(),
+      updatedAt: nowIso(),
+    }), { merge: true });
+    await notificationService.createNotification({
+      userId: providerId,
+      type: "commission_payment_submitted",
+      title: "Commission payment submitted",
+      body: "Your commission payment proof is waiting for admin approval.",
+      isRead: false,
+      route: "/(tabs)/profile",
+      createdAt: nowIso(),
+    }).catch(() => undefined);
+  },
+
+  async reviewCommissionPayment(billId: string, adminId: string, status: "Approved" | "Rejected", adminRemarks?: string): Promise<void> {
+    if (status === "Rejected" && !adminRemarks?.trim()) {
+      throw new Error("Admin remarks are required when rejecting a commission payment.");
+    }
+    try {
+      await callFunction<{ billId: string; status: "Approved" | "Rejected"; adminRemarks?: string }, { ok: boolean }>(
+        "reviewWorkerCommissionPayment",
+        { billId, status, adminRemarks: adminRemarks?.trim() }
+      );
+      return;
+    } catch (error) {
+      if (!isCallableUnavailableError(error)) {
+        throw error;
+      }
+    }
+    const billSnap = await getDoc(doc(getFirestore_(), "workerCommissionBills", billId));
+    if (!billSnap.exists()) throw new Error("Commission bill not found.");
+    const bill = billSnap.data() as WorkerCommissionBill;
+    const batch = writeBatch(getFirestore_());
+    batch.set(doc(getFirestore_(), "workerCommissionBills", billId), sanitizeForFirestore({
+      status,
+      reviewedBy: adminId,
+      reviewedAt: nowIso(),
+      adminRemarks: adminRemarks?.trim() || "",
+      updatedAt: nowIso(),
+    }), { merge: true });
+    if (status === "Approved") {
+      const revenueId = `revenue-commission-${billId}`;
+      batch.set(doc(getFirestore_(), "adminRevenueRecords", revenueId), sanitizeForFirestore({
+        revenueId,
+        sourceType: "monthly_commission",
+        sourcePaymentId: billId,
+        providerId: bill.providerId,
+        userId: bill.userId,
+        amount: bill.amountDue,
+        status: "Approved",
+        approvedBy: adminId,
+        approvedAt: nowIso(),
+        cycleStart: bill.cycleStart,
+        cycleEnd: bill.cycleEnd,
+        createdAt: nowIso(),
+      } as AdminRevenueRecord), { merge: true });
+    }
+    await batch.commit();
+    if (status === "Approved") {
+      await this.recomputeFinanceSummary(bill.providerId);
+    }
+  },
+
+  async recomputeFinanceSummary(providerId: string, existingBatch?: WriteBatch): Promise<WorkerFinanceSummary> {
+    const settings = await this.getSettings();
+    const [bookings, payments, bills, registration, existingSummarySnapshot] = await Promise.all([
+      bookingService.getProviderBookings(providerId),
+      paymentService.getProviderEarnings(providerId),
+      this.getCommissionBills(providerId),
+      this.getRegistrationPaymentByProvider(providerId),
+      getDoc(doc(getFirestore_(), "workerFinanceSummaries", providerId)),
+    ]);
+    const existingSummary = existingSummarySnapshot.exists() ? (existingSummarySnapshot.data() as Partial<WorkerFinanceSummary>) : null;
+    const featureActivatedAt = existingSummary?.featureActivatedAt || settings.featureActivatedAt;
+    const activationTime = new Date(featureActivatedAt).getTime();
+    const completedPaid = bookings
+      .filter((booking) => {
+        const trackedAt = new Date(booking.workerAcceptedAt || booking.updatedAt || booking.createdAt).getTime();
+        return ["Accepted", "On the Way", "In Progress", "Completed"].includes(booking.status) && trackedAt >= activationTime;
+      })
+      .sort((left, right) => {
+        const byDate = new Date(left.workerAcceptedAt || left.updatedAt || left.createdAt).getTime() - new Date(right.workerAcceptedAt || right.updatedAt || right.createdAt).getTime();
+        return byDate || left.bookingId.localeCompare(right.bookingId);
+      });
+    const totalIncome = completedPaid.reduce((sum, booking) => {
+      const payment = payments.find((entry) => entry.bookingId === booking.bookingId && entry.status === "Paid");
+      return sum + Number(payment?.amount ?? booking.amount ?? 0);
+    }, 0);
+    const freeUsed = Math.min(settings.freeBookingsGranted, completedPaid.length);
+    const approvedBills = bills.filter((bill) => bill.status === "Approved");
+    const pendingBills = bills.filter((bill) => bill.status === "Pending" || bill.status === "Submitted" || bill.status === "Rejected");
+    const overdueBills = bills.filter((bill) => bill.status === "Overdue");
+    const summary: WorkerFinanceSummary = {
+      providerId,
+      userId: providerId,
+      registrationPaymentStatus: registration?.status || "Waived",
+      registrationPaymentId: registration?.paymentId,
+      totalFreeBookingsGranted: settings.freeBookingsGranted,
+      freeBookingsUsed: freeUsed,
+      freeBookingsRemaining: Math.max(0, settings.freeBookingsGranted - freeUsed),
+      totalCompletedPaidBookings: completedPaid.length,
+      totalIncome,
+      totalCommissionableBookings: Math.max(0, completedPaid.length - settings.freeBookingsGranted),
+      totalCommissionPaid: approvedBills.reduce((sum, bill) => sum + Number(bill.amountDue || 0), 0),
+      totalCommissionPending: pendingBills.reduce((sum, bill) => sum + Number(bill.amountDue || 0), 0),
+      totalCommissionOverdue: overdueBills.reduce((sum, bill) => sum + Number(bill.amountDue || 0), 0),
+      hasOverdueCommission: overdueBills.length > 0,
+      restrictedFromAcceptingBookings: overdueBills.length > 0,
+      restrictionReason: overdueBills.length ? "Your monthly 10% admin payment is overdue. Please settle it first before accepting or matching new bookings." : undefined,
+      restrictedSince: overdueBills.length ? overdueBills[0].graceEndsAt : undefined,
+      restrictionLiftedAt: overdueBills.length ? undefined : nowIso(),
+      lastBillId: bills[0]?.billId,
+      featureActivatedAt,
+      updatedAt: nowIso(),
+    };
+    const batch = existingBatch || writeBatch(getFirestore_());
+    batch.set(doc(getFirestore_(), "workerFinanceSummaries", providerId), sanitizeForFirestore(summary), { merge: true });
+    batch.set(doc(getFirestore_(), "providerProfiles", providerId), sanitizeForFirestore({
+      financialStatus: {
+        registrationPaymentStatus: summary.registrationPaymentStatus,
+        freeBookingsGranted: summary.totalFreeBookingsGranted,
+        freeBookingsUsed: summary.freeBookingsUsed,
+        freeBookingsRemaining: summary.freeBookingsRemaining,
+        restrictedFromAcceptingBookings: summary.restrictedFromAcceptingBookings,
+        restrictionReason: summary.restrictionReason,
+        hasOverdueCommission: summary.hasOverdueCommission,
+        updatedAt: nowIso(),
+      },
+    }), { merge: true });
+    if (!existingBatch) await batch.commit();
+    return summary;
+  },
+
+  async canWorkerAcceptBookings(providerId: string): Promise<{ allowed: boolean; reason?: string }> {
+    let summary: WorkerFinanceSummary | null = null;
+    let bills: WorkerCommissionBill[] = [];
+
+    try {
+      [summary, bills] = await Promise.all([
+        this.getFinanceSummary(providerId),
+        this.getCommissionBills(providerId),
+      ]);
+    } catch (error) {
+      if (!isPermissionDeniedError(error)) {
+        throw error;
+      }
+
+      // Customer-side booking checks can fall back to the provider's public profile status.
+      const profile = await userService.getProviderProfile(providerId);
+      const financialStatus = profile?.financialStatus;
+      if (financialStatus?.restrictedFromAcceptingBookings || financialStatus?.hasOverdueCommission) {
+        return {
+          allowed: false,
+          reason: financialStatus.restrictionReason || "This worker cannot accept bookings right now until the admin payment is settled.",
+        };
+      }
+      return { allowed: true };
+    }
+
+    const now = new Date();
+    const hasBlockingBill = bills.some((bill) => {
+      if (bill.status === "Overdue") return true;
+      if (!["Pending", "Submitted", "Rejected"].includes(bill.status)) return false;
+      return Boolean(bill.graceEndsAt && new Date(bill.graceEndsAt) < now);
+    });
+    if (hasBlockingBill) {
+      return { allowed: false, reason: "Your admin commission payment is overdue. Please pay the admin before accepting another booking." };
+    }
+    if (summary.restrictedFromAcceptingBookings || summary.hasOverdueCommission) {
+      return { allowed: false, reason: summary.restrictionReason || "You have an overdue admin commission payment." };
+    }
+    return { allowed: true };
+  },
+
+  async generateMonthlyBill(providerId: string, cycleDate = new Date()): Promise<WorkerCommissionBill | null> {
+    const settings = await this.getSettings();
+    if (!settings.commissionEnabled) return null;
+    const { start, end } = commissionOfficialCycleBounds(cycleDate);
+    const billId = `commission-${providerId}-${monthKeyFromDate(end)}`;
+    const existing = await getDoc(doc(getFirestore_(), "workerCommissionBills", billId));
+    const existingBill = existing.exists() ? (existing.data() as WorkerCommissionBill) : null;
+    if (existingBill?.status === "Approved") return existingBill;
+
+    const [bookings, payments, summary] = await Promise.all([
+      bookingService.getProviderBookings(providerId),
+      paymentService.getProviderEarnings(providerId),
+      this.getFinanceSummary(providerId),
+    ]);
+    const paidByBookingId = new Map(payments.filter((payment) => payment.status === "Paid").map((payment) => [payment.bookingId, payment]));
+    const activationTime = new Date(summary.featureActivatedAt || settings.featureActivatedAt).getTime();
+    const allCompletedPaid = bookings
+      .filter((booking) => {
+        const trackedAt = new Date(booking.workerAcceptedAt || booking.updatedAt || booking.createdAt).getTime();
+        return ["Accepted", "On the Way", "In Progress", "Completed"].includes(booking.status) && trackedAt >= activationTime;
+      })
+      .sort((left, right) => {
+        const byDate = new Date(left.workerAcceptedAt || left.updatedAt || left.createdAt).getTime() - new Date(right.workerAcceptedAt || right.updatedAt || right.createdAt).getTime();
+        return byDate || left.bookingId.localeCompare(right.bookingId);
+      });
+    const completedPaid = allCompletedPaid.filter((booking) => {
+      const trackedAt = new Date(booking.workerAcceptedAt || booking.updatedAt || booking.createdAt);
+      return trackedAt >= start && trackedAt <= end;
+    });
+    if (!completedPaid.length) return null;
+    const priorCompletedPaidCount = allCompletedPaid.filter((booking) => new Date(booking.workerAcceptedAt || booking.updatedAt || booking.createdAt) < start).length;
+    const freeBeforeBill = Math.max(0, settings.freeBookingsGranted - priorCompletedPaidCount);
+    const freeApplied = Math.min(freeBeforeBill, completedPaid.length);
+    const commissionableBookings = Math.max(0, completedPaid.length - freeApplied);
+    const commissionableIncome = completedPaid.slice(freeApplied).reduce((sum, booking) => {
+      const payment = paidByBookingId.get(booking.bookingId);
+      return sum + Number(payment?.amount ?? booking.amount ?? 0);
+    }, 0);
+    const dueDate = new Date(end.getFullYear(), end.getMonth() + 1, settings.monthlyBillDueDay, 23, 59, 59, 999);
+    const graceEndsAt = addDays(dueDate, settings.gracePeriodDays).toISOString();
+    const surchargeSnapshot = applyCommissionSurcharge(
+      roundMoney(commissionableIncome * (settings.commissionPercentage / 100)),
+      graceEndsAt,
+      settings.lateSurchargeRate
+    );
+    const bill: WorkerCommissionBill = {
+      billId,
+      providerId,
+      userId: providerId,
+      cycleStart: start.toISOString(),
+      cycleEnd: end.toISOString(),
+      generatedAt: existingBill?.generatedAt || nowIso(),
+      dueDate: dueDate.toISOString(),
+      graceEndsAt,
+      status: existingBill?.status && existingBill.status !== "Waived" ? existingBill.status : commissionableBookings > 0 ? "Pending" : "Waived",
+      totalIncome: completedPaid.reduce((sum, booking) => sum + Number(paidByBookingId.get(booking.bookingId)?.amount ?? booking.amount ?? 0), 0),
+      totalCompletedPaidBookings: completedPaid.length,
+      freeBookingsAppliedThisBill: freeApplied,
+      freeBookingsRemainingAfterBill: Math.max(0, freeBeforeBill - freeApplied),
+      commissionableBookings,
+      commissionPercentage: settings.commissionPercentage,
+      baseCommissionAmount: surchargeSnapshot.baseCommissionAmount,
+      surchargeRateApplied: surchargeSnapshot.surchargeRateApplied,
+      surchargeDaysApplied: surchargeSnapshot.surchargeDaysApplied,
+      surchargeAmount: surchargeSnapshot.surchargeAmount,
+      amountDue: surchargeSnapshot.amountDue,
+      createdAt: existingBill?.createdAt || nowIso(),
+      updatedAt: nowIso(),
+    };
+    const batch = writeBatch(getFirestore_());
+    batch.set(doc(getFirestore_(), "workerCommissionBills", billId), sanitizeForFirestore(bill), { merge: true });
+    completedPaid.forEach((booking, index) => {
+      const paymentAmount = Number(paidByBookingId.get(booking.bookingId)?.amount ?? booking.amount ?? 0);
+      const isCommissionable = index >= freeApplied;
+      batch.set(doc(getFirestore_(), "bookings", booking.bookingId), sanitizeForFirestore({
+        commissionEvaluated: true,
+        commissionable: isCommissionable,
+        usedFreeBookingAllowance: !isCommissionable,
+        commissionPercentage: settings.commissionPercentage,
+        commissionAmount: isCommissionable ? Math.round(paymentAmount * (settings.commissionPercentage / 100) * 100) / 100 : 0,
+        commissionBillId: isCommissionable ? billId : "",
+      }), { merge: true });
+    });
+    await batch.commit();
+    await this.recomputeFinanceSummary(providerId);
+    return bill;
+  },
+
+  async markOverdueBills(): Promise<void> {
+    const now = new Date();
+    const settings = await this.getSettings();
+    const bills = await this.getAllCommissionBills();
+    const overdue = bills.filter((bill) => ["Pending", "Submitted", "Rejected"].includes(bill.status) && new Date(bill.graceEndsAt) < now);
+    const existingOverdue = bills.filter((bill) => bill.status === "Overdue");
+    if (!overdue.length && !existingOverdue.length) return;
+    const batch = writeBatch(getFirestore_());
+    overdue.forEach((bill) => {
+      const surchargeSnapshot = applyCommissionSurcharge(
+        Number(bill.baseCommissionAmount ?? bill.amountDue ?? 0),
+        bill.graceEndsAt,
+        settings.lateSurchargeRate,
+        now
+      );
+      batch.set(doc(getFirestore_(), "workerCommissionBills", bill.billId), {
+        status: "Overdue",
+        baseCommissionAmount: surchargeSnapshot.baseCommissionAmount,
+        surchargeRateApplied: surchargeSnapshot.surchargeRateApplied,
+        surchargeDaysApplied: surchargeSnapshot.surchargeDaysApplied,
+        surchargeAmount: surchargeSnapshot.surchargeAmount,
+        amountDue: surchargeSnapshot.amountDue,
+        updatedAt: nowIso(),
+      }, { merge: true });
+    });
+    existingOverdue.forEach((bill) => {
+      const surchargeSnapshot = applyCommissionSurcharge(
+        Number(bill.baseCommissionAmount ?? bill.amountDue ?? 0),
+        bill.graceEndsAt,
+        settings.lateSurchargeRate,
+        now
+      );
+      batch.set(doc(getFirestore_(), "workerCommissionBills", bill.billId), {
+        baseCommissionAmount: surchargeSnapshot.baseCommissionAmount,
+        surchargeRateApplied: surchargeSnapshot.surchargeRateApplied,
+        surchargeDaysApplied: surchargeSnapshot.surchargeDaysApplied,
+        surchargeAmount: surchargeSnapshot.surchargeAmount,
+        amountDue: surchargeSnapshot.amountDue,
+        updatedAt: nowIso(),
+      }, { merge: true });
+    });
+    await batch.commit();
+    await Promise.all([...new Set([...overdue, ...existingOverdue].map((bill) => bill.providerId))].map((providerId) => this.recomputeFinanceSummary(providerId)));
+  },
+};
+
+async function getWorkerFeatureRestriction(userId?: string): Promise<{ restricted: boolean; reason?: string }> {
+  const targetUserId = userId || getFirebaseAuth().currentUser?.uid;
+  if (!targetUserId) return { restricted: false };
+  const user = await userService.getUserDocument(targetUserId).catch(() => null);
+  if (user?.role !== "provider") return { restricted: false };
+  const restriction = await workerPaymentService.canWorkerAcceptBookings(targetUserId);
+  return restriction.allowed
+    ? { restricted: false }
+    : { restricted: true, reason: restriction.reason || "Your admin commission payment is overdue. Please pay the admin to use this feature." };
+}
+
+async function assertWorkerFeatureAllowed(userId?: string): Promise<void> {
+  const restriction = await getWorkerFeatureRestriction(userId);
+  if (restriction.restricted) {
+    throw new Error(restriction.reason || "Your admin commission payment is overdue. Please pay the admin to continue.");
+  }
+}
+
+// ============================================================================
 // MESSAGING SERVICES
 // ============================================================================
 
 export const messagingService = {
   // Get or create message thread
   async getOrCreateThread(bookingId: string, participants: string[]): Promise<string> {
+    await assertWorkerFeatureAllowed(getFirebaseAuth().currentUser?.uid);
     const normalizedParticipants = [...participants].sort();
     const participantQuery = query(
       collection(getFirestore_(), "messageThreads"),
@@ -2007,6 +3138,7 @@ export const messagingService = {
     text: string,
     attachments: Array<string | MediaAttachment> = []
   ): Promise<string> {
+    await assertWorkerFeatureAllowed(senderId);
     const messageId = `msg-${Date.now()}`;
     const thread = await getDoc(doc(getFirestore_(), "messageThreads", threadId));
     const threadData = thread.exists() ? (thread.data() as MessageThread) : null;
@@ -2077,6 +3209,8 @@ export const messagingService = {
 
   // Get thread messages
   async getThreadMessages(threadId: string): Promise<Message[]> {
+    const restriction = await getWorkerFeatureRestriction();
+    if (restriction.restricted) return [];
     const q = query(collection(getFirestore_(), "messages"), where("threadId", "==", threadId));
     const snapshot = await getDocs(q);
     return snapshot.docs.map((doc) => doc.data() as Message);
@@ -2084,6 +3218,8 @@ export const messagingService = {
 
   // Get user threads
   async getUserThreads(userId: string): Promise<MessageThread[]> {
+    const restriction = await getWorkerFeatureRestriction(userId);
+    if (restriction.restricted) return [];
     const q = query(
       collection(getFirestore_(), "messageThreads"),
       where("participants", "array-contains", userId)
@@ -2095,6 +3231,8 @@ export const messagingService = {
   },
 
   async getArchivedThreads(userId: string): Promise<MessageThread[]> {
+    const restriction = await getWorkerFeatureRestriction(userId);
+    if (restriction.restricted) return [];
     const q = query(
       collection(getFirestore_(), "messageThreads"),
       where("participants", "array-contains", userId)
@@ -2155,6 +3293,54 @@ export const messagingService = {
   },
 
   subscribeThreadMessages(threadId: string, callback: (messages: Message[]) => void): () => void {
+    let unsubscribe: (() => void) | undefined;
+    let active = true;
+    void getWorkerFeatureRestriction().then((restriction) => {
+      if (!active) return;
+      if (restriction.restricted) {
+        callback([]);
+        return;
+      }
+      const q = query(collection(getFirestore_(), "messages"), where("threadId", "==", threadId));
+      unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          callback(snapshot.docs.map((entry) => entry.data() as Message));
+        },
+        (error) => handleSnapshotError("Thread messages", error, () => callback([]))
+      );
+    });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  },
+
+  subscribeUserThreads(userId: string, callback: (threads: MessageThread[]) => void): () => void {
+    let unsubscribe: (() => void) | undefined;
+    let active = true;
+    void getWorkerFeatureRestriction(userId).then((restriction) => {
+      if (!active) return;
+      if (restriction.restricted) {
+        callback([]);
+        return;
+      }
+      const q = query(collection(getFirestore_(), "messageThreads"), where("participants", "array-contains", userId));
+      unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          callback(snapshot.docs.map((entry) => entry.data() as MessageThread));
+        },
+        (error) => handleSnapshotError("User threads", error, () => callback([]))
+      );
+    });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  },
+
+  subscribeThreadMessagesLegacy(threadId: string, callback: (messages: Message[]) => void): () => void {
     const q = query(collection(getFirestore_(), "messages"), where("threadId", "==", threadId));
     return onSnapshot(
       q,
@@ -2165,7 +3351,7 @@ export const messagingService = {
     );
   },
 
-  subscribeUserThreads(userId: string, callback: (threads: MessageThread[]) => void): () => void {
+  subscribeUserThreadsLegacy(userId: string, callback: (threads: MessageThread[]) => void): () => void {
     const q = query(collection(getFirestore_(), "messageThreads"), where("participants", "array-contains", userId));
     return onSnapshot(
       q,
@@ -2281,7 +3467,7 @@ export const communityPostService = {
     return postId;
   },
 
-  subscribePosts(callback: (posts: CommunityPost[]) => void): () => void {
+  subscribePosts(callback: (posts: CommunityPost[]) => void, viewerId?: string): () => void {
     const q = query(collection(getFirestore_(), "communityPosts"));
     return onSnapshot(
       q,
@@ -2354,6 +3540,7 @@ export const communityPostService = {
   },
 
   async toggleLike(postId: string, userId: string): Promise<void> {
+    await assertWorkerFeatureAllowed(userId);
     await runTransaction(getFirestore_(), async (transaction) => {
       const postRef = doc(getFirestore_(), "communityPosts", postId);
       const postSnap = await transaction.get(postRef);
@@ -2368,6 +3555,7 @@ export const communityPostService = {
   },
 
   async addComment(postId: string, userId: string, body: string, attachments: Array<string | MediaAttachment> = []): Promise<void> {
+    await assertWorkerFeatureAllowed(userId);
     const trimmed = body.trim();
     if (!trimmed && !attachments.length) return;
     const commentId = `comment-${Date.now()}`;
@@ -2401,6 +3589,7 @@ export const communityPostService = {
     body: string,
     attachments: Array<string | MediaAttachment> = []
   ): Promise<void> {
+    await assertWorkerFeatureAllowed(userId);
     const trimmed = body.trim();
     if (!trimmed && !attachments.length) return;
     const replyId = `reply-${Date.now()}`;
@@ -2433,6 +3622,7 @@ export const communityPostService = {
   },
 
   async togglePhotoLike(postId: string, photoId: string, photoUrl: string, userId: string): Promise<void> {
+    await assertWorkerFeatureAllowed(userId);
     await runTransaction(getFirestore_(), async (transaction) => {
       const postRef = doc(getFirestore_(), "communityPosts", postId);
       const postSnap = await transaction.get(postRef);
@@ -2469,6 +3659,7 @@ export const communityPostService = {
   },
 
   async addPhotoComment(postId: string, photoId: string, photoUrl: string, userId: string, body: string): Promise<void> {
+    await assertWorkerFeatureAllowed(userId);
     const trimmed = body.trim();
     if (!trimmed) return;
     await runTransaction(getFirestore_(), async (transaction) => {
@@ -2513,6 +3704,10 @@ export const communityPostService = {
   },
 
   async claimPostAsBooking(postId: string, providerId: string): Promise<string> {
+    const restriction = await workerPaymentService.canWorkerAcceptBookings(providerId);
+    if (!restriction.allowed) {
+      throw new Error(restriction.reason || "Settle your overdue admin payment before accepting new bookings.");
+    }
     const bookingId = `booking-${Date.now()}`;
     const claimedAt = nowIso();
     await runTransaction(getFirestore_(), async (transaction) => {

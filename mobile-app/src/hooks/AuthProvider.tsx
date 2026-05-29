@@ -1,4 +1,4 @@
-import { createContext, PropsWithChildren, useContext, useMemo, useState, useEffect, useRef } from "react";
+import { createContext, PropsWithChildren, useCallback, useContext, useMemo, useState, useEffect, useRef } from "react";
 import {
   User,
   UserRole,
@@ -17,11 +17,13 @@ function formatAuthError(error: unknown) {
     return "Something went wrong. Please try again.";
   }
 
+  const message = error.message.toLowerCase();
+
   if (error.message.includes("auth/invalid-credential") || error.message.includes("auth/wrong-password")) {
     return "Incorrect email or password, or the account does not exist yet.";
   }
 
-  if (error.message.includes("auth/invalid-email")) {
+  if (message.includes("auth/invalid-email") || message.includes("invalid_email")) {
     return "Please enter a valid email address.";
   }
 
@@ -33,7 +35,7 @@ function formatAuthError(error: unknown) {
     return "This account has been disabled. Please contact support or the admin team.";
   }
 
-  if (error.message.includes("auth/too-many-requests")) {
+  if (message.includes("auth/too-many-requests") || message.includes("too_many_attempts_try_later")) {
     return "Too many failed sign-in attempts. Please wait a moment before trying again.";
   }
 
@@ -41,8 +43,16 @@ function formatAuthError(error: unknown) {
     return "Network connection failed. Please check your internet connection and try again.";
   }
 
-  if (error.message.includes("auth/email-already-in-use")) {
+  if (message.includes("auth/email-already-in-use") || message.includes("email_exists")) {
     return "That email is already registered. Use Sign in to continue with that account.";
+  }
+
+  if (message.includes("auth/weak-password") || message.includes("weak_password")) {
+    return "The password is too weak. Use at least 6 characters, preferably with letters and numbers.";
+  }
+
+  if (message.includes("auth/operation-not-allowed") || message.includes("operation_not_allowed")) {
+    return "Email and password registration is not enabled in Firebase Authentication.";
   }
 
   if (error.message.includes("auth/invalid-api-key")) {
@@ -54,6 +64,11 @@ function formatAuthError(error: unknown) {
   }
 
   return error.message;
+}
+
+function isOfflineDataError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+  return message.includes("client is offline") || message.includes("offline") || message.includes("unavailable");
 }
 
 type AppUser = User & {
@@ -78,6 +93,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const GOOGLE_AUTH_TIMEOUT_MS = 45000;
+const USER_DOCUMENT_RETRY_DELAYS_MS = [150, 350, 700, 1200];
 
 function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -96,7 +112,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [error, setError] = useState<string | null>(null);
   const googleAuthInFlightRef = useRef(false);
 
-  async function loadAppUser(uid: string) {
+  const loadAppUser = useCallback(async (uid: string) => {
     const userDoc = await authService.getUserDocument(uid);
     if (!userDoc) {
       return null;
@@ -112,7 +128,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
 
     return appUser;
-  }
+  }, []);
+
+  const loadAppUserWithRetry = useCallback(async (uid: string) => {
+    let appUser = await loadAppUser(uid);
+    if (appUser) return appUser;
+
+    for (const delay of USER_DOCUMENT_RETRY_DELAYS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      appUser = await loadAppUser(uid);
+      if (appUser) return appUser;
+    }
+
+    return null;
+  }, [loadAppUser]);
 
   // Listen to Firebase auth state changes
   useEffect(() => {
@@ -123,7 +152,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           if (googleAuthInFlightRef.current) {
             return;
           }
-          const appUser = await loadAppUser(firebaseUser.uid);
+          const appUser = await loadAppUserWithRetry(firebaseUser.uid);
           if (appUser) {
             setUser(appUser);
             setSelectedRole(appUser.role);
@@ -137,15 +166,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setSelectedRole(null);
         }
       } catch (err) {
-        console.error("Auth state error:", err);
-        setError(formatAuthError(err));
+        if (isOfflineDataError(err)) {
+          setError("The connection looks unstable. We will refresh your account when Firestore reconnects.");
+        } else {
+          console.error("Auth state error:", err);
+          setError(formatAuthError(err));
+        }
       } finally {
         setLoading(false);
       }
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [loadAppUserWithRetry]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -179,7 +212,39 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setError(null);
           setLoading(true);
           const normalizedPhone = phone?.trim();
-          const { uid } = await authService.registerWithEmail(email, password, fullName, role, normalizedPhone);
+          let uid = "";
+          let recoveredExistingAccount = false;
+
+          try {
+            const result = await authService.registerWithEmail(email, password, fullName, role, normalizedPhone);
+            uid = result.uid;
+          } catch (registrationError) {
+            const rawMessage = registrationError instanceof Error ? registrationError.message.toLowerCase() : String(registrationError || "").toLowerCase();
+            const emailAlreadyExists = rawMessage.includes("auth/email-already-in-use") || rawMessage.includes("email_exists");
+            if (!emailAlreadyExists) {
+              throw registrationError;
+            }
+
+            const existingFirebaseUser = await authService.loginWithEmail(email, password);
+            const existingUserDoc = await authService.getUserDocument(existingFirebaseUser.uid);
+            if (!existingUserDoc) {
+              await userService.updateUserDocument(existingFirebaseUser.uid, {
+                email,
+                fullName,
+                phone: normalizedPhone,
+                role,
+                authProvider: "email",
+                profilePhoto: "",
+                appTheme: "system"
+              });
+            } else if (existingUserDoc.role !== role) {
+              throw new Error(`This email is already registered as ${existingUserDoc.role}. Please sign in with that role or use a different email.`);
+            }
+
+            uid = existingFirebaseUser.uid;
+            recoveredExistingAccount = true;
+          }
+
           if (phone?.trim() && role === "customer") {
             await userService.updateCustomerProfile(uid, { phone: phone.trim() });
           }
@@ -188,13 +253,28 @@ export function AuthProvider({ children }: PropsWithChildren) {
           }
           const acceptedAt = new Date().toISOString();
           await userService.updateUserDocument(uid, {
+            fullName,
+            role,
             termsAcceptedAt: acceptedAt,
             termsVersion: KABISIG_TERMS_VERSION
           });
+          if (role === "provider") {
+            await userService.updateProviderProfile(uid, {
+              displayName: fullName,
+              phone: normalizedPhone || "",
+              approvalStatus: "Draft",
+              isApproved: false
+            });
+          }
           const userDoc = await authService.getUserDocument(uid);
           if (userDoc) {
             let appUser: AppUser = { ...userDoc };
             if (userDoc.role === "provider") {
+              appUser.onboardingCompleted = false;
+              appUser.approvalStatus = "Draft";
+            }
+            if (recoveredExistingAccount && role === "provider") {
+              appUser.role = "provider";
               appUser.onboardingCompleted = false;
               appUser.approvalStatus = "Draft";
             }
@@ -315,6 +395,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
             emergencyContact: form.emergencyContact,
             sampleWorkUrls: form.sampleWorkUrls || [],
             availability: form.availability || [],
+            registrationPaymentProofUrl: form.registrationPaymentProofUrl || "",
+            registrationPaymentReference: form.registrationPaymentReference || "",
+            registrationPaymentDate: form.registrationPaymentDate || "",
+            registrationPaymentMethod: form.registrationPaymentMethod || "",
           });
 
           // Update user state
@@ -348,7 +432,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
       },
     }),
-    [user, selectedRole, loading, error]
+    [user, selectedRole, loading, error, loadAppUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

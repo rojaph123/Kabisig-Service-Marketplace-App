@@ -1,11 +1,20 @@
 {
-  "scheme": "com.rov_japheth.kabisigmobile",
-  "android": {
-    "package": "com.rov_japheth.kabisigmobile"
-  },
-  "extra": {
-    "eas": {
-      "projectId": "efaff336-0e5b-40b0-a8b2-8c33b2c5d123"
+  "expo": {
+    "name": "Kabisig",
+    "slug": "kabisig-mobile",
+    "version": "1.0.0",
+    "scheme": "com.rov_japheth.kabisigmobile",
+    "extra": {
+      "eas": {
+        "projectId": "7438bb5d-b60e-4329-b042-6db8e90e62fc"
+      }
+    },
+    "owner": "rov_japheth",
+    "android": {
+      "package": "com.rov_japheth.kabisigmobile"
+    },
+    "ios": {
+      "bundleIdentifier": "com.rov_japheth.kabisigmobile"
     }
   }
 }

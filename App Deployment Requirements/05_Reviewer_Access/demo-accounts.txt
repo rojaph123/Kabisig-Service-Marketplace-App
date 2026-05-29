@@ -1,0 +1,21 @@
+Create these real accounts before submission and replace the placeholders.
+
+Customer reviewer account:
+Email: reviewer.customer@YOUR_DOMAIN
+Password: REPLACE_WITH_REAL_PASSWORD
+Role: Customer
+
+Worker reviewer account:
+Email: reviewer.worker@YOUR_DOMAIN
+Password: REPLACE_WITH_REAL_PASSWORD
+Role: Worker
+
+Admin reviewer account, only if the store reviewer needs admin-web access:
+Email: reviewer.admin@YOUR_DOMAIN
+Password: REPLACE_WITH_REAL_PASSWORD
+Role: Admin
+
+Important:
+- Do not submit placeholder passwords.
+- Make sure the worker account is approved and has test booking/payment data if the reviewer must test worker flows.
+- Make sure the customer account can create a booking without using real money.

@@ -11,6 +11,7 @@ import {
   paymentService,
   providerService,
   userService,
+  workerPaymentService,
   type AnalyticsSummary,
   type AdminAuditLog,
   type Booking,
@@ -22,8 +23,11 @@ import {
   type ProviderProfile,
   type ServiceCategory,
   type User,
+  type AdminRevenueRecord,
+  type WorkerCommissionBill,
+  type WorkerRegistrationPayment,
 } from "@kabisig/shared";
-import { collection, doc, getDoc, getDocs, onSnapshot } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, onSnapshot, type QuerySnapshot } from "firebase/firestore";
 
 export interface MarketplaceSnapshot {
   users: User[];
@@ -33,6 +37,9 @@ export interface MarketplaceSnapshot {
   bookingConflicts: BookingConflictHistory[];
   bookingChangeRequests: BookingChangeRequest[];
   payments: Payment[];
+  workerRegistrationPayments: WorkerRegistrationPayment[];
+  workerCommissionBills: WorkerCommissionBill[];
+  adminRevenueRecords: AdminRevenueRecord[];
   categories: ServiceCategory[];
   complaints: ComplaintReport[];
   auditLogs: AdminAuditLog[];
@@ -188,21 +195,58 @@ function emptyAnalyticsSummary(): AnalyticsSummary {
   };
 }
 
+function isPermissionDeniedError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("permission-denied") || message.includes("missing or insufficient permissions");
+}
+
+function handleAdminSnapshotError(label: string, error: unknown, onDenied?: () => void) {
+  if (isPermissionDeniedError(error)) {
+    onDenied?.();
+    return;
+  }
+
+  console.error(`${label} listener error:`, error);
+  onDenied?.();
+}
+
+async function ensureMarketplaceDefaultsSafely(label = "Marketplace defaults") {
+  try {
+    await marketplaceConfigService.ensureDefaultMarketplaceData();
+  } catch (error) {
+    handleAdminSnapshotError(label, error);
+  }
+}
+
+async function loadAdminSection<T>(label: string, request: Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await request;
+  } catch (error) {
+    handleAdminSnapshotError(label, error);
+    return fallback;
+  }
+}
+
 export async function loadConfiguredCategories(): Promise<ServiceCategory[]> {
-  await marketplaceConfigService.ensureDefaultMarketplaceData();
-  const snapshot = await getDocs(collection(getFirestore_(), "serviceCategories"));
-  return snapshot.docs.map((entry) => entry.data() as ServiceCategory);
+  await ensureMarketplaceDefaultsSafely("Category defaults");
+  return loadAdminSection("Configured categories", getDocs(collection(getFirestore_(), "serviceCategories")), {
+    docs: [],
+  } as unknown as Awaited<ReturnType<typeof getDocs>>).then((snapshot) =>
+    snapshot.docs.map((entry) => entry.data() as ServiceCategory)
+  );
 }
 
 export async function loadConfiguredCoverageAreas() {
-  await marketplaceConfigService.ensureDefaultMarketplaceData();
-  const snapshot = await getDocs(collection(getFirestore_(), "coverageAreas"));
+  await ensureMarketplaceDefaultsSafely("Coverage area defaults");
+  const snapshot = await loadAdminSection("Configured coverage areas", getDocs(collection(getFirestore_(), "coverageAreas")), {
+    docs: [],
+  } as unknown as Awaited<ReturnType<typeof getDocs>>);
   return snapshot.docs.map((entry) => entry.data() as { id: string; name: string; active: boolean });
 }
 
 export async function loadMarketplaceAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const summary = await getDoc(doc(getFirestore_(), "analytics", "marketplace"));
-  if (summary.exists()) {
+  const summary = await loadAdminSection("Marketplace analytics document", getDoc(doc(getFirestore_(), "analytics", "marketplace")), null);
+  if (summary?.exists()) {
     return summary.data() as AnalyticsSummary;
   }
   return (await loadMarketplaceSnapshot()).analytics;
@@ -211,33 +255,42 @@ export async function loadMarketplaceAnalyticsSummary(): Promise<AnalyticsSummar
 export function subscribeMarketplaceAnalyticsSummary(
   callback: (analytics: AnalyticsSummary) => void
 ): () => void {
-  return onSnapshot(doc(getFirestore_(), "analytics", "marketplace"), (snapshot) => {
-    if (snapshot.exists()) {
-      callback(snapshot.data() as AnalyticsSummary);
-      return;
-    }
+  return onSnapshot(
+    doc(getFirestore_(), "analytics", "marketplace"),
+    (snapshot) => {
+      if (snapshot.exists()) {
+        callback(snapshot.data() as AnalyticsSummary);
+        return;
+      }
 
-    callback(emptyAnalyticsSummary());
-    void loadMarketplaceSnapshot().then((marketplaceSnapshot) => {
-      callback(marketplaceSnapshot.analytics);
-    });
-  });
+      callback(emptyAnalyticsSummary());
+      void loadMarketplaceSnapshot()
+        .then((marketplaceSnapshot) => {
+          callback(marketplaceSnapshot.analytics);
+        })
+        .catch((error) => handleAdminSnapshotError("Marketplace analytics fallback", error));
+    },
+    (error) => handleAdminSnapshotError("Marketplace analytics", error, () => callback(emptyAnalyticsSummary()))
+  );
 }
 
 export async function loadMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
-  await marketplaceConfigService.ensureDefaultMarketplaceData();
-  const [users, providerProfiles, pendingApplications, bookings, bookingConflicts, bookingChangeRequests, payments, categories, complaints, auditLogs] =
+  await ensureMarketplaceDefaultsSafely();
+  const [users, providerProfiles, pendingApplications, bookings, bookingConflicts, bookingChangeRequests, payments, workerRegistrationPayments, workerCommissionBills, adminRevenueRecords, categories, complaints, auditLogs] =
     await Promise.all([
-      userService.getAllUsers(),
-      providerService.getAllProviderProfiles(),
-      providerService.getPendingApplications(),
-      bookingService.getAllBookings(),
-      bookingConflictService.getProviderConflictHistory(""),
-      bookingChangeRequestService.getAllRequests(),
-      paymentService.getAllPayments(),
+      loadAdminSection("Users", userService.getAllUsers(), []),
+      loadAdminSection("Provider profiles", providerService.getAllProviderProfiles(), []),
+      loadAdminSection("Provider applications", providerService.getPendingApplications(), []),
+      loadAdminSection("Bookings", bookingService.getAllBookings(), []),
+      loadAdminSection("Booking conflicts", bookingConflictService.getProviderConflictHistory(""), []),
+      loadAdminSection("Booking change requests", bookingChangeRequestService.getAllRequests(), []),
+      loadAdminSection("Payments", paymentService.getAllPayments(), []),
+      loadAdminSection("Worker registration payments", workerPaymentService.getAllRegistrationPayments(), []),
+      loadAdminSection("Worker commission bills", workerPaymentService.getAllCommissionBills(), []),
+      loadAdminSection("Admin revenue records", workerPaymentService.getAllRevenueRecords(), []),
       loadConfiguredCategories(),
-      complaintService.getAllComplaints(),
-      adminAuditService.getAllAuditLogs(),
+      loadAdminSection("Complaints", complaintService.getAllComplaints(), []),
+      loadAdminSection("Admin audit logs", adminAuditService.getAllAuditLogs(), []),
     ]);
 
   return {
@@ -248,6 +301,9 @@ export async function loadMarketplaceSnapshot(): Promise<MarketplaceSnapshot> {
     bookingConflicts,
     bookingChangeRequests,
     payments,
+    workerRegistrationPayments,
+    workerCommissionBills,
+    adminRevenueRecords,
     categories,
     complaints,
     auditLogs,
@@ -266,7 +322,9 @@ export function subscribeMarketplaceSnapshot(
   callback: (snapshot: MarketplaceSnapshot) => void
 ): () => void {
   const db = getFirestore_();
-  void marketplaceConfigService.ensureDefaultMarketplaceData();
+  void marketplaceConfigService.ensureDefaultMarketplaceData().catch((error) => {
+    handleAdminSnapshotError("Marketplace defaults", error);
+  });
   let state: Omit<MarketplaceSnapshot, "analytics"> = {
     users: [],
     providerProfiles: [],
@@ -275,81 +333,130 @@ export function subscribeMarketplaceSnapshot(
     bookingConflicts: [],
     bookingChangeRequests: [],
     payments: [],
+    workerRegistrationPayments: [],
+    workerCommissionBills: [],
+    adminRevenueRecords: [],
     categories: [],
     complaints: [],
     auditLogs: [],
   };
 
   const emit = () => {
-    callback({
-      ...state,
-      analytics: buildAnalyticsSummary(
-        state.users,
-        state.providerProfiles,
-        state.pendingApplications,
-        state.bookings,
-        state.payments,
-        state.complaints
-      ),
-    });
+    try {
+      callback({
+        ...state,
+        analytics: buildAnalyticsSummary(
+          state.users,
+          state.providerProfiles,
+          state.pendingApplications,
+          state.bookings,
+          state.payments,
+          state.complaints
+        ),
+      });
+    } catch (error) {
+      handleAdminSnapshotError("Marketplace snapshot render", error);
+    }
   };
 
+  function listenCollection(
+    collectionName: string,
+    label: string,
+    applySnapshot: (snapshot: QuerySnapshot) => Partial<Omit<MarketplaceSnapshot, "analytics">>,
+    fallbackState: Partial<Omit<MarketplaceSnapshot, "analytics">>
+  ) {
+    return onSnapshot(
+      collection(db, collectionName),
+      (snapshot) => {
+        try {
+          state = { ...state, ...applySnapshot(snapshot) };
+          emit();
+        } catch (error) {
+          handleAdminSnapshotError(`${label} data`, error, () => {
+            state = { ...state, ...fallbackState };
+            emit();
+          });
+        }
+      },
+      (error) =>
+        handleAdminSnapshotError(label, error, () => {
+          state = { ...state, ...fallbackState };
+          emit();
+        })
+    );
+  }
+
   const unsubscribers = [
-    onSnapshot(collection(db, "users"), (snapshot) => {
-      state = { ...state, users: snapshot.docs.map((entry) => entry.data() as User) };
-      emit();
-    }),
-    onSnapshot(collection(db, "providerProfiles"), (snapshot) => {
-      state = {
-        ...state,
+    listenCollection("users", "Users", (snapshot) => ({ users: snapshot.docs.map((entry) => entry.data() as User) }), { users: [] }),
+    listenCollection(
+      "providerProfiles",
+      "Provider profiles",
+      (snapshot) => ({
         providerProfiles: snapshot.docs.map((entry) => ({ ...(entry.data() as ProviderProfile), userId: entry.id })),
-      };
-      emit();
-    }),
-    onSnapshot(collection(db, "providerApplications"), (snapshot) => {
-      const applications = snapshot.docs.map((entry) => entry.data() as ProviderApplication);
-      state = {
-        ...state,
-        pendingApplications: applications.filter((application) => application.status === "Pending Approval"),
-      };
-      emit();
-    }),
-    onSnapshot(collection(db, "bookings"), (snapshot) => {
-      state = { ...state, bookings: snapshot.docs.map((entry) => entry.data() as Booking) };
-      emit();
-    }),
-    onSnapshot(collection(db, "bookingConflicts"), (snapshot) => {
-      state = {
-        ...state,
-        bookingConflicts: snapshot.docs.map((entry) => entry.data() as BookingConflictHistory),
-      };
-      emit();
-    }),
-    onSnapshot(collection(db, "bookingChangeRequests"), (snapshot) => {
-      state = {
-        ...state,
-        bookingChangeRequests: snapshot.docs.map((entry) => entry.data() as BookingChangeRequest),
-      };
-      emit();
-    }),
-    onSnapshot(collection(db, "payments"), (snapshot) => {
-      state = { ...state, payments: snapshot.docs.map((entry) => entry.data() as Payment) };
-      emit();
-    }),
-    onSnapshot(collection(db, "serviceCategories"), () => {
-      void loadConfiguredCategories().then((categories) => {
-        state = { ...state, categories };
-        emit();
-      });
-    }),
-    onSnapshot(collection(db, "complaints"), (snapshot) => {
-      state = { ...state, complaints: snapshot.docs.map((entry) => entry.data() as ComplaintReport) };
-      emit();
-    }),
-    onSnapshot(collection(db, "adminAuditLogs"), (snapshot) => {
-      state = { ...state, auditLogs: snapshot.docs.map((entry) => entry.data() as AdminAuditLog) };
-      emit();
-    }),
+      }),
+      { providerProfiles: [] }
+    ),
+    listenCollection(
+      "providerApplications",
+      "Provider applications",
+      (snapshot) => {
+        const applications = snapshot.docs.map((entry) => entry.data() as ProviderApplication);
+        return {
+          pendingApplications: applications.filter((application) => application.status === "Pending Approval"),
+        };
+      },
+      { pendingApplications: [] }
+    ),
+    listenCollection("bookings", "Bookings", (snapshot) => ({ bookings: snapshot.docs.map((entry) => entry.data() as Booking) }), { bookings: [] }),
+    listenCollection(
+      "bookingConflicts",
+      "Booking conflicts",
+      (snapshot) => ({ bookingConflicts: snapshot.docs.map((entry) => entry.data() as BookingConflictHistory) }),
+      { bookingConflicts: [] }
+    ),
+    listenCollection(
+      "bookingChangeRequests",
+      "Booking change requests",
+      (snapshot) => ({ bookingChangeRequests: snapshot.docs.map((entry) => entry.data() as BookingChangeRequest) }),
+      { bookingChangeRequests: [] }
+    ),
+    listenCollection("payments", "Payments", (snapshot) => ({ payments: snapshot.docs.map((entry) => entry.data() as Payment) }), { payments: [] }),
+    listenCollection(
+      "workerRegistrationPayments",
+      "Worker registration payments",
+      (snapshot) => ({ workerRegistrationPayments: snapshot.docs.map((entry) => entry.data() as WorkerRegistrationPayment) }),
+      { workerRegistrationPayments: [] }
+    ),
+    listenCollection(
+      "workerCommissionBills",
+      "Worker commission bills",
+      (snapshot) => ({ workerCommissionBills: snapshot.docs.map((entry) => entry.data() as WorkerCommissionBill) }),
+      { workerCommissionBills: [] }
+    ),
+    listenCollection(
+      "adminRevenueRecords",
+      "Admin revenue records",
+      (snapshot) => ({ adminRevenueRecords: snapshot.docs.map((entry) => entry.data() as AdminRevenueRecord) }),
+      { adminRevenueRecords: [] }
+    ),
+    onSnapshot(
+      collection(db, "serviceCategories"),
+      () => {
+        void loadConfiguredCategories()
+          .then((categories) => {
+            state = { ...state, categories };
+            emit();
+          })
+          .catch((error) => handleAdminSnapshotError("Service categories reload", error));
+      },
+      (error) =>
+        handleAdminSnapshotError("Service categories", error, () => {
+          state = { ...state, categories: [] };
+          emit();
+        })
+    ),
+    listenCollection("complaints", "Complaints", (snapshot) => ({ complaints: snapshot.docs.map((entry) => entry.data() as ComplaintReport) }), { complaints: [] }),
+    listenCollection("adminAuditLogs", "Admin audit logs", (snapshot) => ({ auditLogs: snapshot.docs.map((entry) => entry.data() as AdminAuditLog) }), { auditLogs: [] }),
   ];
 
   return () => {

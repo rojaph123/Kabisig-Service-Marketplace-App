@@ -1,0 +1,2 @@
+iOS Bundle ID:
+com.rov_japheth.kabisigmobile

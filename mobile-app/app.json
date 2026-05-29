@@ -2,6 +2,7 @@
   "expo": {
     "name": "Kabisig",
     "slug": "kabisig-mobile",
+    "version": "1.0.0",
     "scheme": "com.rov_japheth.kabisigmobile",
     "orientation": "portrait",
     "icon": "./assets/branding/icon.png",
@@ -19,6 +20,12 @@
       "expo-web-browser",
       "expo-font",
       "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Kabisig lets you choose photos or videos for service requests, chats, proof of work, payment screenshots, and worker verification documents."
+        }
+      ],
       [
         "expo-location",
         {
@@ -39,7 +46,32 @@
     },
     "owner": "rov_japheth",
     "android": {
-      "package": "com.rov_japheth.kabisigmobile"
+      "package": "com.rov_japheth.kabisigmobile",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/branding/icon.png",
+        "backgroundColor": "#1C93E3"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.rov_japheth.kabisigmobile",
+      "buildNumber": "1",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Kabisig uses your location only when you choose to autofill a booking address or save your profile location.",
+        "NSPhotoLibraryUsageDescription": "Kabisig lets you choose photos or videos for service requests, chats, proof of work, payment screenshots, and worker verification documents.",
+        "NSUserNotificationsUsageDescription": "Kabisig sends booking, chat, payment, worker approval, and account update notifications."
+      }
     }
   }
 }

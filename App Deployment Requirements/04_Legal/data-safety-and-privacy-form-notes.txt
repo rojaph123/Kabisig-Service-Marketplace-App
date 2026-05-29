@@ -1,0 +1,53 @@
+Use these notes when completing Google Play Data safety and Apple App Privacy.
+
+Data collected:
+- Name
+- Email address
+- Phone number when provided
+- Profile photo
+- Customer address and optional GPS pin
+- Worker identity/profile/application details
+- Work samples and uploaded documents
+- Booking details, schedules, notes, and attachments
+- Messages and support requests
+- Reviews, ratings, complaints, and reports
+- Payment records, commission bills, payment screenshots, reference numbers, and payment dates
+- Device/session data and push notification tokens
+
+Primary purposes:
+- App functionality
+- Account management
+- Booking coordination
+- Worker verification
+- Payment and commission review
+- Fraud prevention and safety
+- Customer support
+- Notifications
+- Legal/accounting/admin operations
+
+Third-party services:
+- Firebase Authentication
+- Firestore
+- Firebase Storage
+- Firebase Cloud Functions
+- Expo notifications
+- Google sign-in
+- Google Maps links/embed
+- Hosting provider for admin web
+
+Data sharing:
+- Booking details are shared between customers, assigned workers, and admins as needed.
+- Approved worker profile details are visible to customers.
+- Admins can review records for operations, safety, payments, complaints, and support.
+- Third-party infrastructure providers process data needed to operate the app.
+
+Security:
+- Authenticated access
+- Role-based admin access
+- Firebase rules
+- Storage controls
+- Audit records
+
+Data deletion:
+- Users can request deletion through Help or support@kabisig.app.
+- Some records may be retained for legal, safety, accounting, active booking, payment, commission, dispute, or fraud-prevention reasons.

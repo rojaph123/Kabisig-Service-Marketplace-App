@@ -87,7 +87,9 @@ export default function CategoriesPage() {
   const [togglingCoverageId, setTogglingCoverageId] = useState<string | null>(null);
 
   async function reload() {
-    await marketplaceConfigService.ensureDefaultMarketplaceData();
+    await marketplaceConfigService.ensureDefaultMarketplaceData().catch(() => {
+      // Keep the page usable even if this account cannot seed default records.
+    });
     const [nextSnapshot, nextCoverageAreas] = await Promise.all([
       loadMarketplaceSnapshot(),
       loadConfiguredCoverageAreas()

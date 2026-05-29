@@ -1,0 +1,19 @@
+Android production AAB:
+npm run build:android:production
+
+iOS production App Store build:
+npm run build:ios:production
+
+Both platforms:
+npm run build:all:production
+
+Android submit after Play Console service account is configured:
+npm run submit:android
+
+iOS submit after Apple App Store Connect credentials are configured:
+npm run submit:ios
+
+Notes:
+- Run `npx eas login` before building.
+- Run `npx eas credentials` if EAS asks for Android keystore or Apple signing credentials.
+- Use internal testing/TestFlight before production.

@@ -1,0 +1,20 @@
+Pre-submission smoke test:
+
+1. Fresh install opens without crashing.
+2. Register customer account.
+3. Register worker account.
+4. Login/logout works.
+5. Forgot password works.
+6. Customer profile can save address.
+7. Provider listing loads.
+8. Booking request validates required fields.
+9. Booking request can be submitted with legal test data.
+10. Worker cannot move on the way before customer confirmation.
+11. Worker receives accepted-booking popup and Open Booking button works with one tap.
+12. Chat loads and media picker handles denial gracefully.
+13. Notifications screen loads.
+14. Worker payments screen shows running commission and official bill when applicable.
+15. Payment proof upload validates reference number and payment date.
+16. Terms, privacy, data deletion, and support URLs are publicly reachable.
+17. No placeholder pages or Lorem ipsum remain.
+18. App does not expose admin-only screens to non-admin mobile users.

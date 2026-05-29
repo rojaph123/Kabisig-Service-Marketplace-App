@@ -42,11 +42,18 @@ export default function TabsLayout() {
   const [acceptedBookingPrompt, setAcceptedBookingPrompt] = useState<Booking | null>(null);
   const [acceptedBookingProviderName, setAcceptedBookingProviderName] = useState<string>("");
   const [acceptedBookingProviderPhoto, setAcceptedBookingProviderPhoto] = useState<string>("");
+  const [providerConfirmedBookingPrompt, setProviderConfirmedBookingPrompt] = useState<Booking | null>(null);
+  const [providerConfirmedCustomerName, setProviderConfirmedCustomerName] = useState<string>("");
+  const [providerConfirmedCustomerPhoto, setProviderConfirmedCustomerPhoto] = useState<string>("");
   const [completedBookingProviderName, setCompletedBookingProviderName] = useState<string>("");
   const [completedBookingProviderPhoto, setCompletedBookingProviderPhoto] = useState<string>("");
+  const [completionFeedbackBusy, setCompletionFeedbackBusy] = useState(false);
   const [acceptancePromptBusy, setAcceptancePromptBusy] = useState(false);
+  const [providerConfirmationBusy, setProviderConfirmationBusy] = useState(false);
   const [acceptancePromptError, setAcceptancePromptError] = useState<string | null>(null);
   const [suppressedAcceptedBookingId, setSuppressedAcceptedBookingId] = useState<string | null>(null);
+  const [suppressedCompletionBookingId, setSuppressedCompletionBookingId] = useState<string | null>(null);
+  const [suppressedProviderConfirmedBookingId, setSuppressedProviderConfirmedBookingId] = useState<string | null>(null);
   const [acceptedBookingResultPopup, setAcceptedBookingResultPopup] = useState<{
     tone: "success" | "info";
     title: string;
@@ -56,6 +63,8 @@ export default function TabsLayout() {
   const initializedBookingsRef = useRef(false);
   const routedCompletionIdsRef = useRef(new Set<string>());
   const completionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const acceptedPromptActionRef = useRef(false);
+  const completionFeedbackActionRef = useRef(false);
   const acceptedIconFloat = useRef(new Animated.Value(0)).current;
 
   const blurActiveElementOnWeb = useCallback(() => {
@@ -63,6 +72,14 @@ export default function TabsLayout() {
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement) {
       activeElement.blur();
+    }
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => {
+        const nextActiveElement = document.activeElement;
+        if (nextActiveElement instanceof HTMLElement && nextActiveElement !== document.body) {
+          nextActiveElement.blur();
+        }
+      });
     }
   }, []);
 
@@ -124,6 +141,12 @@ export default function TabsLayout() {
     };
   }, [acceptedBookingPrompt, acceptedIconFloat]);
 
+  useEffect(() => {
+    if (acceptedBookingPrompt || completedBookingPrompt || providerConfirmedBookingPrompt) {
+      blurActiveElementOnWeb();
+    }
+  }, [acceptedBookingPrompt, blurActiveElementOnWeb, completedBookingPrompt, providerConfirmedBookingPrompt]);
+
   useFocusEffect(
     useCallback(() => {
       void loadBadges();
@@ -140,12 +163,21 @@ export default function TabsLayout() {
       setAcceptedBookingPrompt(null);
       setAcceptedBookingProviderName("");
       setAcceptedBookingProviderPhoto("");
+      setProviderConfirmedBookingPrompt(null);
+      setProviderConfirmedCustomerName("");
+      setProviderConfirmedCustomerPhoto("");
       setCompletedBookingProviderName("");
       setCompletedBookingProviderPhoto("");
+      setCompletionFeedbackBusy(false);
+      setProviderConfirmationBusy(false);
+      acceptedPromptActionRef.current = false;
+      completionFeedbackActionRef.current = false;
       setAcceptancePromptBusy(false);
       setAcceptancePromptError(null);
       setAcceptedBookingResultPopup(null);
       setSuppressedAcceptedBookingId(null);
+      setSuppressedCompletionBookingId(null);
+      setSuppressedProviderConfirmedBookingId(null);
       if (completionTimeoutRef.current) {
         clearTimeout(completionTimeoutRef.current);
         completionTimeoutRef.current = null;
@@ -189,6 +221,7 @@ export default function TabsLayout() {
           const existingReview = await reviewService.getReviewForBooking(booking.bookingId, user.id);
           if (!active) return;
           if (!existingReview) {
+            if (booking.bookingId === suppressedCompletionBookingId) continue;
             unresolvedCompletedBooking = booking;
             break;
           }
@@ -222,6 +255,12 @@ export default function TabsLayout() {
           setCompletedBookingPrompt(null);
           setCompletedBookingProviderName("");
           setCompletedBookingProviderPhoto("");
+          if (suppressedCompletionBookingId) {
+            const suppressedCompleted = completedBookings.find((booking) => booking.bookingId === suppressedCompletionBookingId);
+            if (!suppressedCompleted) {
+              setSuppressedCompletionBookingId(null);
+            }
+          }
           if (completionTimeoutRef.current) {
             clearTimeout(completionTimeoutRef.current);
             completionTimeoutRef.current = null;
@@ -256,45 +295,93 @@ export default function TabsLayout() {
         completionTimeoutRef.current = null;
       }
     };
-  }, [suppressedAcceptedBookingId, user]);
+  }, [suppressedAcceptedBookingId, suppressedCompletionBookingId, user]);
+
+  useEffect(() => {
+    if (!user || user.role !== "provider") {
+      setProviderConfirmedBookingPrompt(null);
+      setProviderConfirmedCustomerName("");
+      setProviderConfirmedCustomerPhoto("");
+      return;
+    }
+
+    let active = true;
+    const unsubscribe = bookingService.subscribeProviderBookings(user.id, async (items) => {
+      if (!active) return;
+
+      const actionableConfirmedBooking =
+        [...items]
+          .filter((booking) => booking.status === "Accepted" && booking.customerAcceptanceConfirmedAt)
+          .sort((left, right) => String(right.customerAcceptanceConfirmedAt || "").localeCompare(String(left.customerAcceptanceConfirmedAt || "")))
+          .find((booking) => booking.bookingId !== suppressedProviderConfirmedBookingId) || null;
+
+      if (!actionableConfirmedBooking) {
+        setProviderConfirmedBookingPrompt(null);
+        setProviderConfirmedCustomerName("");
+        setProviderConfirmedCustomerPhoto("");
+        if (suppressedProviderConfirmedBookingId) {
+          const suppressedBooking = items.find((booking) => booking.bookingId === suppressedProviderConfirmedBookingId);
+          if (!suppressedBooking || suppressedBooking.status !== "Accepted" || !suppressedBooking.customerAcceptanceConfirmedAt) {
+            setSuppressedProviderConfirmedBookingId(null);
+          }
+        }
+        return;
+      }
+
+      setProviderConfirmedBookingPrompt(actionableConfirmedBooking);
+      const customerUser = await userService.getUserDocument(actionableConfirmedBooking.customerId).catch(() => null);
+      if (!active) return;
+      setProviderConfirmedCustomerName(customerUser?.fullName || "Customer");
+      setProviderConfirmedCustomerPhoto(customerUser?.profilePhoto || "");
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [suppressedProviderConfirmedBookingId, user]);
 
   const handleAcceptedBookingConfirmation = useCallback(async () => {
-    if (!user || !acceptedBookingPrompt || acceptancePromptBusy) return;
+    if (!user || !acceptedBookingPrompt || acceptancePromptBusy || acceptedPromptActionRef.current) return;
+    acceptedPromptActionRef.current = true;
     const bookingId = acceptedBookingPrompt.bookingId;
     blurActiveElementOnWeb();
     setSuppressedAcceptedBookingId(bookingId);
     setAcceptedBookingPrompt(null);
     setAcceptancePromptBusy(true);
     setAcceptancePromptError(null);
+    setAcceptedBookingResultPopup({
+      tone: "success",
+      title: "Booking accepted successfully",
+      message: `${acceptedBookingPrompt.serviceName} was accepted. The worker can now proceed to the next step.`
+    });
     try {
       const confirmedAt = new Date().toISOString();
       await bookingService.confirmAcceptedBooking(bookingId, user.id);
       await notificationService.createNotification({
         userId: acceptedBookingPrompt.providerId,
         type: "booking_status_update",
-        title: "Customer confirmed accepted booking",
-        body: `${acceptedBookingPrompt.serviceName} was confirmed by the customer and is ready for the next step.`,
+        title: "Customer confirmed your booking",
+        body: `${acceptedBookingPrompt.serviceName} was confirmed by the customer. Open the booking now and tap On the Way so you do not miss it.`,
         isRead: false,
         route: `/booking-detail?bookingId=${bookingId}`,
         createdAt: confirmedAt
       });
-      setAcceptedBookingResultPopup({
-        tone: "success",
-        title: "Booking accepted",
-        message: `You accepted ${acceptedBookingPrompt.serviceName}. The worker can continue with the next step now.`
-      });
     } catch (error) {
       console.warn("Unable to confirm accepted booking:", error);
       setSuppressedAcceptedBookingId(null);
+      setAcceptedBookingResultPopup(null);
       setAcceptedBookingPrompt(acceptedBookingPrompt);
       setAcceptancePromptError(readableAppError(error, "We could not confirm this booking right now."));
+      acceptedPromptActionRef.current = false;
     } finally {
       setAcceptancePromptBusy(false);
     }
   }, [acceptancePromptBusy, acceptedBookingPrompt, blurActiveElementOnWeb, user]);
 
   const handleAcceptedBookingCancellation = useCallback(async () => {
-    if (!user || !acceptedBookingPrompt || acceptancePromptBusy) return;
+    if (!user || !acceptedBookingPrompt || acceptancePromptBusy || acceptedPromptActionRef.current) return;
+    acceptedPromptActionRef.current = true;
     const bookingId = acceptedBookingPrompt.bookingId;
     blurActiveElementOnWeb();
     setSuppressedAcceptedBookingId(bookingId);
@@ -316,31 +403,36 @@ export default function TabsLayout() {
         route: `/booking-detail?bookingId=${bookingId}`,
         createdAt: cancelledAt
       });
-      setAcceptedBookingResultPopup({
-        tone: "info",
-        title: "Booking cancelled",
-        message: `You cancelled ${acceptedBookingPrompt.serviceName}. The worker has been notified.`
-      });
     } catch (error) {
       console.warn("Unable to cancel accepted booking:", error);
       setSuppressedAcceptedBookingId(null);
       setAcceptedBookingPrompt(acceptedBookingPrompt);
       setAcceptancePromptError(readableAppError(error, "We could not cancel this booking right now."));
+      acceptedPromptActionRef.current = false;
     } finally {
       setAcceptancePromptBusy(false);
     }
   }, [acceptancePromptBusy, acceptedBookingPrompt, blurActiveElementOnWeb, user]);
 
   const handleOpenCompletionFeedback = useCallback(() => {
-    if (!completedBookingPrompt) return;
+    const targetBooking = completedBookingPrompt || pendingReviewBooking;
+    if (!targetBooking || completionFeedbackBusy || completionFeedbackActionRef.current) return;
+    completionFeedbackActionRef.current = true;
+    setCompletionFeedbackBusy(true);
     blurActiveElementOnWeb();
-    const bookingId = completedBookingPrompt.bookingId;
+    const bookingId = targetBooking.bookingId;
+    setSuppressedCompletionBookingId(bookingId);
     setCompletedBookingPrompt(null);
-    router.replace({
+    setPendingReviewBooking(null);
+    router.push({
       pathname: "/booking-review",
       params: { bookingId, source: "completion" }
     });
-  }, [blurActiveElementOnWeb, completedBookingPrompt]);
+    requestAnimationFrame(() => {
+      completionFeedbackActionRef.current = false;
+      setCompletionFeedbackBusy(false);
+    });
+  }, [blurActiveElementOnWeb, completedBookingPrompt, completionFeedbackBusy, pendingReviewBooking]);
 
   if (!user) {
     return <Redirect href="/(auth)/role-selection" />;
@@ -358,7 +450,7 @@ export default function TabsLayout() {
 
   return (
     <>
-      <Modal visible={user.role === "customer" && !!acceptedBookingPrompt && !pendingReviewBooking} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={user.role === "customer" && !!acceptedBookingPrompt && !pendingReviewBooking} transparent animationType="none" onRequestClose={() => {}}>
         <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.64)", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <SurfaceCard style={{ width: "100%", maxWidth: 360, gap: 14, padding: 18 }}>
             <View style={{ alignItems: "center", justifyContent: "center", paddingTop: 2 }}>
@@ -438,7 +530,7 @@ export default function TabsLayout() {
           </SurfaceCard>
         </View>
       </Modal>
-      <Modal visible={user.role === "customer" && !!completedBookingPrompt && !acceptedBookingPrompt} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={user.role === "customer" && !!completedBookingPrompt && !acceptedBookingPrompt} transparent animationType="none" onRequestClose={() => {}}>
         <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.64)", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <SurfaceCard style={{ width: "100%", maxWidth: 360, gap: 14, padding: 18 }}>
             <View style={{ alignItems: "center", justifyContent: "center", paddingTop: 2 }}>
@@ -484,15 +576,93 @@ export default function TabsLayout() {
             ) : null}
             <Pressable
               onPress={handleOpenCompletionFeedback}
+              disabled={completionFeedbackBusy}
               style={{
                 borderRadius: 16,
                 paddingVertical: 13,
                 alignItems: "center",
                 justifyContent: "center",
-                backgroundColor: theme.colors.primary
+                backgroundColor: theme.colors.primary,
+                opacity: completionFeedbackBusy ? 0.7 : 1
               }}
             >
-              <Text style={{ color: theme.colors.textOnPrimary, fontWeight: "900", fontSize: 14 }}>Leave feedback</Text>
+              <Text style={{ color: theme.colors.textOnPrimary, fontWeight: "900", fontSize: 14 }}>{completionFeedbackBusy ? "Opening..." : "Leave feedback"}</Text>
+            </Pressable>
+          </SurfaceCard>
+        </View>
+      </Modal>
+      <Modal visible={user.role === "provider" && !!providerConfirmedBookingPrompt} transparent animationType="none" onRequestClose={() => {}}>
+        <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.64)", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <SurfaceCard style={{ width: "100%", maxWidth: 360, gap: 14, padding: 18 }}>
+            <View style={{ alignItems: "center", justifyContent: "center", paddingTop: 2 }}>
+              <View
+                style={{
+                  width: 58,
+                  height: 58,
+                  borderRadius: 20,
+                  backgroundColor: theme.colors.successSoft,
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}
+              >
+                <Ionicons name="notifications-outline" size={30} color={theme.colors.success} />
+              </View>
+            </View>
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: theme.colors.text, fontSize: 19, fontWeight: "900", textAlign: "center" }}>Customer confirmed the booking</Text>
+              {providerConfirmedCustomerPhoto ? (
+                <Image
+                  source={{ uri: providerConfirmedCustomerPhoto }}
+                  style={{ width: 64, height: 64, borderRadius: 22, alignSelf: "center", marginTop: 4, marginBottom: 2, backgroundColor: theme.colors.surfaceAlt }}
+                  resizeMode="cover"
+                />
+              ) : null}
+              <Text style={{ color: theme.colors.primaryDark, fontWeight: "900", textAlign: "center", fontSize: 16 }}>
+                {providerConfirmedCustomerName || "Customer"}
+              </Text>
+              <Text style={{ color: theme.colors.textMuted, lineHeight: 20, textAlign: "center" }}>
+                {providerConfirmedBookingPrompt
+                  ? `${providerConfirmedCustomerName || "The customer"} confirmed your ${formatServiceLabel(providerConfirmedBookingPrompt.serviceName)} booking. You can now go straight to the booking and tap On the Way.`
+                  : ""}
+              </Text>
+            </View>
+            {providerConfirmedBookingPrompt ? (
+              <View style={{ borderRadius: 16, padding: 12, backgroundColor: theme.colors.surfaceAlt, gap: 4 }}>
+                <Text style={{ color: theme.colors.text, fontWeight: "800" }}>{providerConfirmedBookingPrompt.serviceName}</Text>
+                <Text style={{ color: theme.colors.textMuted, fontSize: 12 }}>{providerConfirmedBookingPrompt.scheduledAt}</Text>
+                <Text style={{ color: theme.colors.textMuted, fontSize: 12 }} numberOfLines={2}>
+                  {providerConfirmedBookingPrompt.address || providerConfirmedBookingPrompt.location}
+                </Text>
+              </View>
+            ) : null}
+            <Pressable
+              onPress={() => {
+                if (providerConfirmationBusy) return;
+                const bookingId = providerConfirmedBookingPrompt?.bookingId;
+                setProviderConfirmationBusy(true);
+                blurActiveElementOnWeb();
+                setProviderConfirmedBookingPrompt(null);
+                if (bookingId) {
+                  setSuppressedProviderConfirmedBookingId(bookingId);
+                }
+                if (bookingId) {
+                  router.push({ pathname: "/booking-detail", params: { bookingId } });
+                }
+                setTimeout(() => {
+                  setProviderConfirmationBusy(false);
+                }, 700);
+              }}
+              style={{
+                borderRadius: 16,
+                paddingVertical: 14,
+                alignItems: "center",
+                backgroundColor: theme.colors.success,
+                opacity: providerConfirmationBusy ? 0.72 : 1
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "900" }}>
+                {providerConfirmationBusy ? "Opening booking..." : "Open booking now"}
+              </Text>
             </Pressable>
           </SurfaceCard>
         </View>

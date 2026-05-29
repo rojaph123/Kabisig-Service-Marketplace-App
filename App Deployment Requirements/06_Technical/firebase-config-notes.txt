@@ -1,0 +1,16 @@
+Before production release:
+
+1. Confirm Firebase project is production-ready.
+2. Confirm Firestore rules are deployed.
+3. Confirm Storage rules are deployed.
+4. Confirm Cloud Functions are deployed.
+5. Confirm Firebase Authentication providers are enabled:
+   - Email/password
+   - Google, if Google sign-in is offered in the production build
+6. Confirm authorized domains include the hosted admin web domain.
+7. Confirm Android OAuth client uses package:
+   com.rov_japheth.kabisigmobile
+8. Add Android SHA-1/SHA-256 fingerprints from EAS credentials/Play signing to Firebase and Google Cloud OAuth.
+9. Confirm iOS OAuth client uses Bundle ID:
+   com.rov_japheth.kabisigmobile
+10. Keep real secrets out of Git. Use EAS secrets or environment variables.

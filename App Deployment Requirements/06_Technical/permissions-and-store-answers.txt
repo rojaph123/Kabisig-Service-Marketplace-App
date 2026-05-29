@@ -1,0 +1,24 @@
+Permissions used by Kabisig:
+
+Location:
+- Purpose: Optional GPS/autofill for booking address, customer profile location, and post location.
+- User-facing reason: Kabisig uses your location only when you choose to autofill a booking address or save your profile location.
+
+Photos/videos:
+- Purpose: Service request media, chat media, proof of work, payment screenshots, worker documents, and portfolio/work samples.
+- User-facing reason: Kabisig lets you choose photos or videos for service requests, chats, proof of work, payment screenshots, and worker verification documents.
+
+Notifications:
+- Purpose: Booking updates, chat alerts, worker approval updates, payment/commission notices, review prompts, and account alerts.
+- User-facing reason: Kabisig sends booking, chat, payment, worker approval, and account update notifications.
+
+Internet/network:
+- Purpose: Account login, Firebase data, uploads, maps, notifications, and admin operations.
+
+Sensitive permissions not intentionally used:
+- Background location
+- SMS
+- Call log
+- Contacts
+- Microphone
+- Camera

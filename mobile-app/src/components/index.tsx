@@ -2,7 +2,7 @@ import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
-import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Component, ErrorInfo, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -35,6 +35,14 @@ const logo = require("../../assets/branding/icon.jpg");
 const logoWithTagline = require("../../assets/branding/logo-with-tagline.jpg");
 const loadingLogo = require("../../assets/branding/Loading Logo.png");
 const startupLogo = require("../../assets/branding/Facebook Logo.png");
+
+function blurActiveElementOnWeb() {
+  if (Platform.OS !== "web" || typeof document === "undefined") return;
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement) {
+    activeElement.blur();
+  }
+}
 
 export function Screen({
   children,
@@ -616,12 +624,56 @@ export function FeedbackBanner({
   );
 }
 
+export class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Unhandled mobile app error:", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) {
+      return this.props.children;
+    }
+
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.colors.background, justifyContent: "center", padding: 22 }}>
+        <SurfaceCard style={{ gap: 14, alignItems: "center" }}>
+          <View style={{ width: 58, height: 58, borderRadius: 24, backgroundColor: theme.colors.dangerSoft, alignItems: "center", justifyContent: "center" }}>
+            <Ionicons name="alert-circle-outline" size={32} color={theme.colors.danger} />
+          </View>
+          <Text style={{ color: theme.colors.text, fontSize: 21, lineHeight: 27, fontWeight: "900", textAlign: "center" }}>
+            Something went wrong
+          </Text>
+          <Text style={{ color: theme.colors.textMuted, fontSize: 14, lineHeight: 20, textAlign: "center" }}>
+            The app caught an unexpected problem. Please try again. If it keeps happening, restart the app.
+          </Text>
+          <Pressable
+            onPress={() => this.setState({ error: null })}
+            style={{ minHeight: 46, borderRadius: 16, backgroundColor: theme.colors.primary, alignItems: "center", justifyContent: "center", paddingHorizontal: 18, paddingVertical: 12, width: "100%" }}
+          >
+            <Text style={{ color: "#fff", fontSize: 14, fontWeight: "900" }}>Try again</Text>
+          </Pressable>
+        </SurfaceCard>
+      </View>
+    );
+  }
+}
+
 export function FullScreenPopup({
   visible,
   title,
   message,
   icon = "checkmark-circle",
   tone = "success",
+  compact = false,
   dismissLabel,
   onDismiss
 }: {
@@ -630,9 +682,41 @@ export function FullScreenPopup({
   message: string;
   icon?: keyof typeof Ionicons.glyphMap;
   tone?: "success" | "info" | "error";
+  compact?: boolean;
   dismissLabel?: string;
   onDismiss?: () => void;
 }) {
+  const [dismissing, setDismissing] = useState(false);
+  const blurActiveElementOnWeb = useCallback(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+      activeElement.blur();
+    }
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => {
+        const nextActiveElement = document.activeElement;
+        if (nextActiveElement instanceof HTMLElement && nextActiveElement !== document.body) {
+          nextActiveElement.blur();
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      setDismissing(false);
+      blurActiveElementOnWeb();
+    }
+  }, [blurActiveElementOnWeb, visible]);
+
+  const handleDismiss = useCallback(() => {
+    if (dismissing) return;
+    setDismissing(true);
+    blurActiveElementOnWeb();
+    onDismiss?.();
+  }, [blurActiveElementOnWeb, dismissing, onDismiss]);
+
   if (!visible) return null;
 
   const palette =
@@ -643,7 +727,7 @@ export function FullScreenPopup({
         : { bg: theme.colors.successSoft, iconColor: theme.colors.success };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={handleDismiss}>
       <View
         style={{
           flex: 1,
@@ -653,26 +737,28 @@ export function FullScreenPopup({
           padding: 24
         }}
       >
-        <SurfaceCard style={{ width: "100%", maxWidth: 340, alignItems: "center", paddingVertical: 28 }}>
-          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: palette.bg, alignItems: "center", justifyContent: "center" }}>
-            <Ionicons name={icon} size={40} color={palette.iconColor} />
+        <SurfaceCard style={{ width: "100%", maxWidth: compact ? 292 : 340, alignItems: "center", paddingVertical: compact ? 18 : 28, paddingHorizontal: compact ? 18 : undefined }}>
+          <View style={{ width: compact ? 48 : 72, height: compact ? 48 : 72, borderRadius: compact ? 24 : 36, backgroundColor: palette.bg, alignItems: "center", justifyContent: "center" }}>
+            <Ionicons name={icon} size={compact ? 28 : 40} color={palette.iconColor} />
           </View>
-          <Text style={{ color: theme.colors.text, fontSize: 21, fontWeight: "900", marginTop: 14, textAlign: "center" }}>{title}</Text>
-          <Text style={{ color: theme.colors.textMuted, textAlign: "center" }}>{message}</Text>
+          <Text style={{ color: theme.colors.text, fontSize: compact ? 17 : 21, lineHeight: compact ? 22 : undefined, fontWeight: "900", marginTop: compact ? 10 : 14, textAlign: "center" }}>{title}</Text>
+          <Text style={{ color: theme.colors.textMuted, textAlign: "center", fontSize: compact ? 13 : undefined, lineHeight: compact ? 18 : undefined }}>{message}</Text>
           {onDismiss ? (
             <Pressable
-              onPress={onDismiss}
+              onPress={handleDismiss}
+              disabled={dismissing}
               style={{
-                marginTop: 18,
-                minWidth: 132,
-                borderRadius: 16,
-                paddingVertical: 12,
-                paddingHorizontal: 18,
+                marginTop: compact ? 14 : 18,
+                minWidth: compact ? 112 : 132,
+                borderRadius: compact ? 14 : 16,
+                paddingVertical: compact ? 10 : 12,
+                paddingHorizontal: compact ? 16 : 18,
                 alignItems: "center",
-                backgroundColor: theme.colors.primary
+                backgroundColor: theme.colors.primary,
+                opacity: dismissing ? 0.72 : 1
               }}
             >
-              <Text style={{ color: "#fff", fontWeight: "800" }}>{dismissLabel || "Okay"}</Text>
+              <Text style={{ color: "#fff", fontWeight: "800" }}>{dismissing ? "Opening..." : dismissLabel || "Okay"}</Text>
             </Pressable>
           ) : null}
         </SurfaceCard>
@@ -756,7 +842,10 @@ export function MapPreviewModal({
                 ) : null}
               </View>
               <Pressable
-                onPress={onClose}
+                onPress={() => {
+                  blurActiveElementOnWeb();
+                  onClose();
+                }}
                 style={{
                   width: 38,
                   height: 38,
@@ -800,7 +889,13 @@ export function MapPreviewModal({
             }}
           >
             <View style={{ flex: 1 }}>
-              <SecondaryButton label="Close" onPress={onClose} />
+              <SecondaryButton
+                label="Close"
+                onPress={() => {
+                  blurActiveElementOnWeb();
+                  onClose();
+                }}
+              />
             </View>
             {onOpenExternal ? (
               <View style={{ flex: 1 }}>
@@ -975,6 +1070,157 @@ export function FormInput(props: TextInputProps & { label: string; required?: bo
         ]}
       />
       {helper ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>{helper}</Text> : null}
+    </View>
+  );
+}
+
+function toDateFieldValue(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function parseDateFieldValue(value?: string) {
+  if (!value) return null;
+  const parts = value.split("-").map(Number);
+  if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function dateFieldMonthCells(cursor: Date) {
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const leading = (firstDay + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (Date | null)[] = [];
+
+  for (let index = 0; index < leading; index += 1) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day += 1) cells.push(new Date(year, month, day));
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+function isDateFieldBlocked(date: Date, minDate?: Date, maxDate?: Date) {
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const min = minDate ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate()).getTime() : undefined;
+  const max = maxDate ? new Date(maxDate.getFullYear(), maxDate.getMonth(), maxDate.getDate()).getTime() : undefined;
+  return (min !== undefined && day < min) || (max !== undefined && day > max);
+}
+
+export function DateSelectField({
+  label,
+  value,
+  onChange,
+  required,
+  error,
+  helper,
+  placeholder = "Select date",
+  minDate,
+  maxDate
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+  error?: boolean;
+  helper?: string;
+  placeholder?: string;
+  minDate?: Date;
+  maxDate?: Date;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedDate = parseDateFieldValue(value);
+  const today = new Date();
+  const [cursor, setCursor] = useState(() => selectedDate || maxDate || today);
+  const monthCells = dateFieldMonthCells(cursor);
+  const monthName = cursor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  function openPicker() {
+    const nextCursor = selectedDate || maxDate || today;
+    setCursor(new Date(nextCursor.getFullYear(), nextCursor.getMonth(), 1));
+    setOpen(true);
+  }
+
+  return (
+    <View style={styles.formGroup}>
+      <Text style={[styles.formLabel, { color: theme.colors.text }]}>
+        {label}
+        {required ? <Text style={{ color: theme.colors.danger }}> *</Text> : null}
+      </Text>
+      <Pressable
+        onPress={openPicker}
+        style={[
+          styles.formInput,
+          {
+            backgroundColor: theme.colors.card,
+            borderColor: error ? theme.colors.danger : theme.colors.border,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingVertical: 14,
+            minHeight: 52
+          }
+        ]}
+      >
+        <Text style={{ color: value ? theme.colors.text : theme.colors.textMuted, fontWeight: value ? "800" : "600" }}>
+          {value || placeholder}
+        </Text>
+        <Ionicons name="calendar-outline" size={18} color={theme.colors.primaryDark} />
+      </Pressable>
+      {helper ? <Text style={[styles.helper, { color: theme.colors.textMuted }]}>{helper}</Text> : null}
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(8,17,32,0.52)", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <View style={{ width: "100%", maxWidth: 380, borderRadius: 24, padding: 16, gap: 14, backgroundColor: theme.colors.card, borderWidth: 1, borderColor: theme.colors.border }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <Pressable onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))} style={{ width: 38, height: 38, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surfaceAlt }}>
+                <Ionicons name="chevron-back" size={18} color={theme.colors.text} />
+              </Pressable>
+              <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>{monthName}</Text>
+              <Pressable onPress={() => setCursor((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))} style={{ width: 38, height: 38, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surfaceAlt }}>
+                <Ionicons name="chevron-forward" size={18} color={theme.colors.text} />
+              </Pressable>
+            </View>
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+                <Text key={day} style={{ flex: 1, textAlign: "center", color: theme.colors.textMuted, fontSize: 11, fontWeight: "900" }}>{day}</Text>
+              ))}
+            </View>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+              {monthCells.map((item, index) => {
+                const itemValue = item ? toDateFieldValue(item) : "";
+                const active = itemValue && itemValue === value;
+                const blocked = item ? isDateFieldBlocked(item, minDate, maxDate) : true;
+                return (
+                  <Pressable
+                    key={`${itemValue || "blank"}-${index}`}
+                    disabled={!item || blocked}
+                    onPress={() => {
+                      if (!item) return;
+                      onChange(toDateFieldValue(item));
+                      setOpen(false);
+                    }}
+                    style={{
+                      width: "13.4%",
+                      aspectRatio: 1,
+                      borderRadius: 14,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: active ? theme.colors.primary : item ? theme.colors.surfaceAlt : "transparent",
+                      opacity: blocked ? 0.35 : 1
+                    }}
+                  >
+                    <Text style={{ color: active ? "#fff" : theme.colors.text, fontWeight: active ? "900" : "800", fontVariant: ["tabular-nums"] }}>
+                      {item ? item.getDate() : ""}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable onPress={() => setOpen(false)} style={{ borderRadius: 15, paddingVertical: 12, alignItems: "center", backgroundColor: theme.colors.surfaceAlt }}>
+              <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

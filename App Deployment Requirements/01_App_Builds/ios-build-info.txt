@@ -1,0 +1,24 @@
+iOS Bundle ID:
+com.rov_japheth.kabisigmobile
+
+App version:
+1.0.0
+
+Build number:
+1
+
+Build tool:
+Expo EAS Build
+
+Production command:
+npm run build:ios:production
+
+Submission command:
+npm run submit:ios
+
+Required before build:
+- Apple Developer Program membership
+- App Store Connect app record
+- iOS Bundle ID registered in Apple Developer
+- Distribution certificate and provisioning profile handled by EAS credentials
+- Apple sign-in review notes are not required unless Apple Sign In is added later

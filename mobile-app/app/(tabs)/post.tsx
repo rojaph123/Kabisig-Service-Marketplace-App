@@ -219,9 +219,9 @@ export default function PostTab() {
     const unsubscribe = communityPostService.subscribePosts((items) => {
       setPosts(items);
       void hydrateUsers(items);
-    });
+    }, user?.id);
     return unsubscribe;
-  }, [hydrateUsers, loadCategories]);
+  }, [hydrateUsers, loadCategories, user?.id]);
 
   useEffect(() => {
     if (params.compose === "1" && !provider) {
@@ -482,7 +482,7 @@ export default function PostTab() {
       router.push({ pathname: "/booking-detail", params: { bookingId } });
     } catch (error) {
       console.error(error);
-      setFeedback({ type: "error", title: "Already claimed", message: "This post may have been claimed by another worker first." });
+      setFeedback({ type: "error", title: "Cannot claim request", message: readableAppError(error, "This post may have been claimed by another worker first.") });
     } finally {
       setBusyPostId(null);
     }
@@ -611,7 +611,7 @@ export default function PostTab() {
                 {comment.attachmentItems?.length || comment.attachments?.length ? (
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
                     {((comment.attachmentItems?.length ? comment.attachmentItems.map((media) => media.url) : comment.attachments) || []).map((uri, index) => (
-                      <View pointerEvents="none" key={`${comment.commentId}-${uri}-${index}`}>
+                      <View key={`${comment.commentId}-${uri}-${index}`} style={{ pointerEvents: "none" }}>
                         <Image source={{ uri }} style={{ width: 78, height: 78, borderRadius: 12, backgroundColor: theme.colors.card }} />
                       </View>
                     ))}
@@ -637,7 +637,7 @@ export default function PostTab() {
                         {reply.attachmentItems?.length || reply.attachments?.length ? (
                           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
                             {((reply.attachmentItems?.length ? reply.attachmentItems.map((media) => media.url) : reply.attachments) || []).map((uri, index) => (
-                              <View pointerEvents="none" key={`${reply.commentId}-${uri}-${index}`}>
+                              <View key={`${reply.commentId}-${uri}-${index}`} style={{ pointerEvents: "none" }}>
                                 <Image source={{ uri }} style={{ width: 68, height: 68, borderRadius: 10, backgroundColor: theme.colors.surfaceAlt }} />
                               </View>
                             ))}

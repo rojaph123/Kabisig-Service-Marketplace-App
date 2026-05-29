@@ -1,0 +1,5 @@
+Use this after hosting the admin web app:
+https://YOUR_ADMIN_WEB_DOMAIN/terms
+
+Local route added:
+admin-web/app/terms/page.tsx

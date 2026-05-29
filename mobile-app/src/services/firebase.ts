@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, initializeFirestore } from "firebase/firestore";
 import { Platform } from "react-native";
 import { setFirebaseConfig, type FirebaseConfig } from "@kabisig/shared";
 
@@ -69,7 +69,22 @@ function createFirebaseAuth(): Auth {
 }
 
 export const firebaseAuth = createFirebaseAuth();
-export const firestore = getFirestore(firebaseApp);
+
+function createFirestore() {
+  if (Platform.OS !== "web") {
+    return getFirestore(firebaseApp);
+  }
+
+  try {
+    return initializeFirestore(firebaseApp, {
+      experimentalAutoDetectLongPolling: true,
+    });
+  } catch {
+    return getFirestore(firebaseApp);
+  }
+}
+
+export const firestore = createFirestore();
 
 export const googleSignInConfig = {
   expoClientId: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "",

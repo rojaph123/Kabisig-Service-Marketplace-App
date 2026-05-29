@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { formatBookingReference, formatReadableDateTime } from "@kabisig/shared";
 import { AnalyticsCharts } from "../../../components/charts";
-import { Card, DashboardStatCard, EmptyPanel, KpiRibbon, StatusBadge, Topbar } from "../../../components/ui";
+import { Card, DashboardStatCard, EmptyPanel, ErrorPanel, KpiRibbon, LoadingPanel, StatusBadge, Topbar } from "../../../components/ui";
 import { getSuspiciousPaymentReasons } from "../../../lib/admin-actions";
 import { loadMarketplaceSnapshot, type MarketplaceSnapshot } from "../../../lib/marketplace-data";
 
@@ -13,7 +13,10 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function load() {
+    void load();
+  }, []);
+
+  async function load() {
       try {
         setLoading(true);
         setSnapshot(await loadMarketplaceSnapshot());
@@ -23,16 +26,13 @@ export default function DashboardPage() {
       } finally {
         setLoading(false);
       }
-    }
-
-    void load();
-  }, []);
+  }
 
   if (loading) {
     return (
       <>
         <Topbar title="Operations overview" />
-        <EmptyPanel title="Loading marketplace data" description="Pulling the latest users, bookings, payments, and provider approvals from Firestore." />
+        <LoadingPanel title="Loading marketplace data" description="Pulling the latest users, bookings, payments, and provider approvals from Firestore." />
       </>
     );
   }
@@ -41,12 +41,14 @@ export default function DashboardPage() {
     return (
       <>
         <Topbar title="Operations overview" />
-        <EmptyPanel title="Dashboard unavailable" description={error || "The live marketplace snapshot could not be loaded."} />
+        <ErrorPanel title="Dashboard unavailable" description={error || "The live marketplace snapshot could not be loaded."} onRetry={() => void load()} />
       </>
     );
   }
 
   const { analytics, bookings, bookingChangeRequests, payments, complaints, pendingApplications, auditLogs } = snapshot;
+  const commissionBills = snapshot.workerCommissionBills;
+  const revenueRecords = snapshot.adminRevenueRecords;
   const openComplaints = complaints.filter((complaint) => complaint.status === "Open" || complaint.status === "Under Review");
   const pendingChangeRequests = bookingChangeRequests.filter((request) => request.status === "Pending");
   const bookingById = new Map(bookings.map((booking) => [booking.bookingId, booking]));
@@ -56,6 +58,17 @@ export default function DashboardPage() {
       reasons: getSuspiciousPaymentReasons(payment, bookingById.get(payment.bookingId))
     }))
     .filter((item) => item.reasons.length);
+  const pendingCommissionReviews = commissionBills.filter((bill) => bill.status === "Submitted");
+  const unpaidCommissionBills = commissionBills.filter((bill) => ["Pending", "Submitted", "Rejected", "Overdue"].includes(bill.status));
+  const overdueCommissionBills = commissionBills.filter((bill) => bill.status === "Overdue");
+  const commissionRevenueThisMonth = revenueRecords
+    .filter((record) => record.sourceType === "monthly_commission")
+    .filter((record) => {
+      const approvedAt = new Date(record.approvedAt || record.createdAt);
+      const now = new Date();
+      return approvedAt.getFullYear() === now.getFullYear() && approvedAt.getMonth() === now.getMonth();
+    })
+    .reduce((sum, record) => sum + Number(record.amount || 0), 0);
   const alerts = [
     {
       title: "Pending provider approvals",
@@ -81,6 +94,18 @@ export default function DashboardPage() {
       tone: "bg-orange-50 text-orange-800 ring-orange-200 dark:bg-orange-500/10 dark:text-orange-200 dark:ring-orange-400/20",
       note: "Cancelled, underpaid, missing, or stale payment records.",
     },
+    {
+      title: "Commission reviews",
+      count: pendingCommissionReviews.length,
+      tone: "bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/20",
+      note: "Worker payment proofs waiting for admin review.",
+    },
+    {
+      title: "Overdue worker bills",
+      count: overdueCommissionBills.length,
+      tone: "bg-red-50 text-red-800 ring-red-200 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-400/20",
+      note: "Workers currently blocked by unpaid commission balances.",
+    },
   ];
 
   return (
@@ -93,6 +118,12 @@ export default function DashboardPage() {
         <DashboardStatCard title="Pending Approvals" value={analytics.pendingApprovals.toString()} hint="Applications waiting for admin review" trend="Needs attention" />
         <DashboardStatCard title="Revenue" value={`PHP ${analytics.revenueSummary.toLocaleString()}`} hint="Total recorded payment volume" trend="Synced from payments" />
       </div>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <DashboardStatCard title="Commission Reviews" value={pendingCommissionReviews.length.toString()} hint="Submitted worker proofs waiting for admin action" trend="Finance queue" />
+        <DashboardStatCard title="Unpaid Bills" value={unpaidCommissionBills.length.toString()} hint="Pending, rejected, submitted, or overdue commission bills" trend="Collection watch" />
+        <DashboardStatCard title="Overdue Workers" value={overdueCommissionBills.length.toString()} hint="Workers currently restricted from accepting bookings" trend="Restriction watch" />
+        <DashboardStatCard title="Commission Revenue" value={`PHP ${commissionRevenueThisMonth.toLocaleString()}`} hint="Approved monthly commission revenue this month" trend="Platform share" />
+      </div>
       <AnalyticsCharts analytics={analytics} />
       <Card title="Admin alert panel">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -104,12 +135,20 @@ export default function DashboardPage() {
             </div>
           ))}
         </div>
-        {suspiciousPayments.length ? (
+        {suspiciousPayments.length || pendingCommissionReviews.length ? (
           <div className="mt-4 space-y-3">
             {suspiciousPayments.slice(0, 4).map(({ payment, reasons }) => (
               <div key={payment.paymentId} className="rounded-3xl border border-orange-200 bg-orange-50/80 p-4 text-sm dark:border-orange-400/20 dark:bg-orange-500/10">
                 <p className="font-black text-kabisig-text">{payment.paymentId}</p>
                 <p className="mt-1 text-kabisig-muted">{reasons.join(", ")}</p>
+              </div>
+            ))}
+            {pendingCommissionReviews.slice(0, 3).map((bill) => (
+              <div key={bill.billId} className="rounded-3xl border border-emerald-200 bg-emerald-50/80 p-4 text-sm dark:border-emerald-400/20 dark:bg-emerald-500/10">
+                <p className="font-black text-kabisig-text">{bill.billId}</p>
+                <p className="mt-1 text-kabisig-muted">
+                  PHP {Number(bill.amountDue || 0).toLocaleString()} proof waiting for review.
+                </p>
               </div>
             ))}
           </div>

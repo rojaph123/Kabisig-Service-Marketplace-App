@@ -126,7 +126,7 @@ export default function ProviderBusinessProfileScreen() {
       }
       footer={<PrimaryButton label={saving ? "Saving..." : "Save business profile"} onPress={() => void handleSave()} disabled={saving} />}
     >
-      <ImageUploadField label="Profile photo" value={form.profilePhotoUrl} onChange={(value) => setForm((current) => (current ? { ...current, profilePhotoUrl: value } : current))} />
+      <ImageUploadField label="Profile photo" value={form.profilePhotoUrl} onChange={(value) => setForm((current) => (current ? { ...current, profilePhotoUrl: value } : current))} compact />
       <FormInput label="Display name" value={form.displayName} onChangeText={(value) => setForm((current) => (current ? { ...current, displayName: value } : current))} />
       <FormInput label="Business name" value={form.businessName} onChangeText={(value) => setForm((current) => (current ? { ...current, businessName: value } : current))} />
       <FormInput label="Phone number" value={form.phone} onChangeText={(value) => setForm((current) => (current ? { ...current, phone: value } : current))} />

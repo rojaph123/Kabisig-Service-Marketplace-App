@@ -10,10 +10,18 @@
   "scripts": {
     "mobile": "npm run dev --workspace mobile-app",
     "admin": "npm run dev --workspace admin-web",
+    "build:admin": "npm run build --workspace admin-web",
+    "deploy:admin:vercel": "npx vercel --cwd admin-web",
     "functions": "npm run serve --workspace functions",
     "lint": "npm run lint --workspace mobile-app && npm run lint --workspace admin-web",
     "android": "npm run android --workspace mobile-app",
-    "ios": "npm run ios --workspace mobile-app"
+    "ios": "npm run ios --workspace mobile-app",
+    "build:android:preview": "npm run build:android:preview --workspace mobile-app",
+    "build:android:production": "npm run build:android:production --workspace mobile-app",
+    "build:ios:production": "npm run build:ios:production --workspace mobile-app",
+    "build:all:production": "npm run build:all:production --workspace mobile-app",
+    "submit:android": "npm run submit:android --workspace mobile-app",
+    "submit:ios": "npm run submit:ios --workspace mobile-app"
   },
   "version": "1.0.0",
   "dependencies": {

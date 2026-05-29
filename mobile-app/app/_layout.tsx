@@ -4,7 +4,7 @@ import "../src/services/firebase";
 import { notificationService } from "@kabisig/shared";
 import { AuthProvider, useAuth } from "../src/hooks/AuthProvider";
 import { ThemeProvider } from "../src/hooks/ThemeProvider";
-import { AppStartupSplash, LaunchScreen } from "../src/components";
+import { AppErrorBoundary, AppStartupSplash, LaunchScreen } from "../src/components";
 import { configureAppTypography } from "../src/utils/typography";
 import {
   canUseAnyNotifications,
@@ -128,10 +128,12 @@ export default function RootLayout() {
   }
 
   return (
-    <AuthProvider>
-      <ThemeProvider>
-        <AppNavigator />
-      </ThemeProvider>
-    </AuthProvider>
+    <AppErrorBoundary>
+      <AuthProvider>
+        <ThemeProvider>
+          <AppNavigator />
+        </ThemeProvider>
+      </AuthProvider>
+    </AppErrorBoundary>
   );
 }

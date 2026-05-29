@@ -154,7 +154,7 @@ export default function ProviderPortfolioScreen() {
         </View>
       </SurfaceCard>
 
-      <SurfaceCard>
+      <SurfaceCard style={{ gap: 10 }}>
         <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: "900" }}>Add a completed work sample</Text>
         <FormInput label="Project title" value={title} onChangeText={setTitle} placeholder="Example: Aircon cleaning and coil repair" />
         <FormInput
@@ -170,6 +170,7 @@ export default function ProviderPortfolioScreen() {
           value={beforePhoto}
           onChange={setBeforePhoto}
           maxSizeMb={MAX_PORTFOLIO_PHOTO_MB}
+          compact
           onError={(message) => setFeedback({ type: "error", title: "Upload too large", message })}
           helper="Show the issue before work started. Photos only."
         />
@@ -178,6 +179,7 @@ export default function ProviderPortfolioScreen() {
           value={afterPhoto}
           onChange={setAfterPhoto}
           maxSizeMb={MAX_PORTFOLIO_PHOTO_MB}
+          compact
           onError={(message) => setFeedback({ type: "error", title: "Upload too large", message })}
           helper="Show the finished result. Photos only."
         />

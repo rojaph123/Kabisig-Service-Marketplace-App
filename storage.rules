@@ -17,6 +17,11 @@ service firebase.storage {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function validWorkerPaymentImage() {
+      return request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches("image/(jpeg|jpg|png|webp)");
+    }
+
     match /providerDocuments/{userId}/{allPaths=**} {
       allow read: if hasRole("admin") || isOwner(userId);
       allow write: if hasRole("admin") || isOwner(userId);
@@ -25,6 +30,21 @@ service firebase.storage {
     match /providerPortfolio/{userId}/{allPaths=**} {
       allow read: if true;
       allow write: if hasRole("admin") || isOwner(userId);
+    }
+
+    match /workerPayments/settings/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if hasRole("admin") && validWorkerPaymentImage();
+    }
+
+    match /workerPayments/registration/{userId}/{allPaths=**} {
+      allow read: if hasRole("admin") || isOwner(userId);
+      allow write: if (hasRole("admin") || isOwner(userId)) && validWorkerPaymentImage();
+    }
+
+    match /workerPayments/commission/{userId}/{allPaths=**} {
+      allow read: if hasRole("admin") || isOwner(userId);
+      allow write: if (hasRole("admin") || isOwner(userId)) && validWorkerPaymentImage();
     }
 
     match /bookings/{bookingId}/{allPaths=**} {

@@ -14,6 +14,10 @@ function formatAuthError(error: unknown) {
     return "Incorrect email or password, or the admin account does not exist yet.";
   }
 
+  if (error.message.includes("auth/invalid-email")) {
+    return "Please enter a valid email address, for example admin@kabisig.com.";
+  }
+
   if (error.message.includes("auth/user-not-found")) {
     return "No admin account was found for that email address.";
   }

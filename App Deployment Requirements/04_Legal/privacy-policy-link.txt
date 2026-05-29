@@ -1,0 +1,5 @@
+Use this after hosting the admin web app:
+https://YOUR_ADMIN_WEB_DOMAIN/privacy
+
+Local route added:
+admin-web/app/privacy/page.tsx

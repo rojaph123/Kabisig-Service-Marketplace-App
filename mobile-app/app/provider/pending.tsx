@@ -1,10 +1,21 @@
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
-import { providerService, userService, type ProviderApprovalStatus } from "@kabisig/shared";
+import { useCallback, useEffect, useState } from "react";
+import { providerService, userService, workerPaymentService, type ProviderApprovalStatus, type WorkerRegistrationPayment } from "@kabisig/shared";
 import { Text, View } from "react-native";
-import { ApprovalStatusCard, BackHeader, FixedScreen, PrimaryButton, SurfaceCard } from "../../src/components";
+import { AppHeader, ApprovalStatusCard, FixedScreen, PrimaryButton, SurfaceCard } from "../../src/components";
 import { useAuth } from "../../src/hooks/AuthProvider";
 import { theme } from "../../src/theme";
+
+function isRecoverablePendingStatusError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+  return (
+    message.includes("permission-denied")
+    || message.includes("missing or insufficient permissions")
+    || message.includes("client is offline")
+    || message.includes("offline")
+    || message.includes("unavailable")
+  );
+}
 
 const progressByStatus = {
   Draft: 22,
@@ -19,6 +30,8 @@ export default function PendingApprovalScreen() {
   const [status, setStatus] = useState<ProviderApprovalStatus>((user?.approvalStatus as ProviderApprovalStatus) || "Pending Approval");
   const [refreshing, setRefreshing] = useState(false);
   const [reviewNotes, setReviewNotes] = useState("");
+  const [registrationPayment, setRegistrationPayment] = useState<WorkerRegistrationPayment | null>(null);
+  const [statusNotice, setStatusNotice] = useState("");
   const progress = progressByStatus[status] ?? 58;
 
   useEffect(() => {
@@ -33,26 +46,56 @@ export default function PendingApprovalScreen() {
     });
   }, [signOut, status]);
 
-  async function refreshStatus() {
+  const refreshStatus = useCallback(async function refreshStatus() {
     if (!user?.id) return;
     setRefreshing(true);
+    setStatusNotice("");
     try {
-      const [profile, latestApplication] = await Promise.all([
-        userService.getProviderProfile(user.id),
-        providerService.getLatestApplicationByUser(user.id)
-      ]);
+      const profile = await userService.getProviderProfile(user.id);
       if (profile?.approvalStatus) {
         setStatus(profile.approvalStatus);
       }
       if (profile?.approvalStatus === "Rejected") {
         return;
       }
+
+      let latestApplication: Awaited<ReturnType<typeof providerService.getLatestApplicationByUser>> = null;
+      try {
+        latestApplication = await providerService.getLatestApplicationByUser(user.id);
+      } catch (error) {
+        if (!isRecoverablePendingStatusError(error)) {
+          console.warn("Could not load latest provider application:", error);
+        }
+        setStatusNotice("Your application was submitted. Some review details may appear after the app refreshes your access.");
+      }
+
       setReviewNotes(latestApplication?.reviewNotes || "");
-      await refreshUser();
+      try {
+        const latestRegistrationPayment = await workerPaymentService.getRegistrationPayment(latestApplication?.registrationPaymentId);
+        setRegistrationPayment(latestRegistrationPayment || (latestApplication?.registrationPaymentSnapshot as WorkerRegistrationPayment | undefined) || null);
+      } catch (error) {
+        if (!isRecoverablePendingStatusError(error)) {
+          console.warn("Could not load worker registration payment:", error);
+        }
+        setRegistrationPayment((latestApplication?.registrationPaymentSnapshot as WorkerRegistrationPayment | undefined) || null);
+      }
+
+      try {
+        await refreshUser();
+      } catch (error) {
+        if (!isRecoverablePendingStatusError(error)) {
+          console.warn("Could not refresh account after pending status check:", error);
+        }
+      }
+    } catch (error) {
+      if (!isRecoverablePendingStatusError(error)) {
+        console.warn("Could not refresh provider pending status:", error);
+      }
+      setStatusNotice("Your application is saved. Please refresh again in a moment if the latest status does not appear.");
     } finally {
       setRefreshing(false);
     }
-  }
+  }, [refreshUser, user?.id]);
 
   const footer = status === "Approved"
     ? <PrimaryButton label="Go to dashboard" onPress={() => void (async () => {
@@ -66,11 +109,11 @@ export default function PendingApprovalScreen() {
   return (
     <FixedScreen
       style={{ backgroundColor: theme.colors.background }}
-      header={<BackHeader title="Application Status" onBack={() => router.back()} />}
+      header={<AppHeader title="Application Status" />}
       footer={footer}
     >
       <ApprovalStatusCard
-        title="Service provider application"
+        title="Worker application"
         status={status}
         note="You can monitor your current verification status here while the admin team reviews your application."
       />
@@ -85,12 +128,35 @@ export default function PendingApprovalScreen() {
         </View>
       </SurfaceCard>
 
-      <SurfaceCard style={{ gap: 8 }}>
-        <Text style={{ fontSize: 16, fontWeight: "800", color: theme.colors.text }}>Status guide</Text>
-        <Text style={{ color: theme.colors.textMuted }}>Pending Approval: waiting for admin review.</Text>
-        <Text style={{ color: theme.colors.textMuted }}>Revision Requested: update missing or unclear requirements.</Text>
-        <Text style={{ color: theme.colors.textMuted }}>Rejected: the current application cannot proceed.</Text>
-        <Text style={{ color: theme.colors.textMuted }}>Approved: you can now continue to the provider dashboard.</Text>
+      <SurfaceCard style={{ gap: 10 }}>
+        <Text style={{ fontSize: 16, fontWeight: "800", color: theme.colors.text }}>Application tracker</Text>
+        {[
+          { label: "Application Submitted", done: true },
+          {
+            label: registrationPayment?.status === "Waived" ? "Registration Free — Waiting for Admin Review" : "Payment Required",
+            done: registrationPayment?.status === "Waived" || registrationPayment?.status === "Submitted" || registrationPayment?.status === "Approved",
+          },
+          {
+            label: "Payment Submitted",
+            done: registrationPayment?.status === "Submitted" || registrationPayment?.status === "Approved",
+            hidden: registrationPayment?.status === "Waived",
+          },
+          { label: "Under Admin Review", done: status === "Pending Approval" || status === "Approved" || status === "Rejected" },
+          { label: status === "Rejected" ? "Rejected" : "Approved", done: status === "Approved" || status === "Rejected" },
+        ].filter((step) => !step.hidden).map((step) => (
+          <View key={step.label} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <View style={{ width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: step.done ? theme.colors.primary : theme.colors.surfaceAlt }}>
+              <Text style={{ color: step.done ? "#fff" : theme.colors.textMuted, fontSize: 12, fontWeight: "900" }}>{step.done ? "✓" : "•"}</Text>
+            </View>
+            <Text style={{ color: theme.colors.text, flex: 1, fontWeight: step.done ? "800" : "600" }}>{step.label}</Text>
+          </View>
+        ))}
+        {statusNotice ? (
+          <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>{statusNotice}</Text>
+        ) : null}
+        {registrationPayment?.adminRemarks ? (
+          <Text style={{ color: theme.colors.danger, lineHeight: 20 }}>Payment note: {registrationPayment.adminRemarks}</Text>
+        ) : null}
       </SurfaceCard>
 
       {reviewNotes ? (

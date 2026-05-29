@@ -345,11 +345,11 @@ export default function BookingChangeRequestScreen() {
             })}
           </View>
 
-          <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900", marginTop: 4 }}>Available time slots</Text>
+          <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: "900" }}>Available time slots</Text>
           {selectedDateException ? (
-            <View style={{ borderRadius: 16, padding: 12, backgroundColor: theme.dark ? theme.colors.warningSoft : "#FFF4E5", borderWidth: 1, borderColor: theme.colors.warning }}>
+            <View style={{ borderRadius: 16, padding: 12, backgroundColor: theme.dark ? theme.colors.warningSoft : "#FFF4E5", borderWidth: 1, borderColor: theme.colors.warning, gap: 4 }}>
               <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Provider unavailable on this date</Text>
-              <Text style={{ color: theme.colors.textMuted, marginTop: 4 }}>
+              <Text style={{ color: theme.colors.textMuted }}>
                 {selectedDateException.reason || "This date was blocked by the provider, so no reschedule times are available."}
               </Text>
             </View>
@@ -399,9 +399,9 @@ export default function BookingChangeRequestScreen() {
         style={{ minHeight: 120, textAlignVertical: "top" }}
       />
 
-      <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt }}>
+      <SurfaceCard style={{ backgroundColor: theme.colors.surfaceAlt, gap: 6 }}>
         <Text style={{ color: theme.colors.text, fontWeight: "900" }}>Who will be notified?</Text>
-        <Text style={{ color: theme.colors.textMuted, marginTop: 6 }}>
+        <Text style={{ color: theme.colors.textMuted }}>
           {counterpart?.fullName || "The other party"} will be notified.
         </Text>
       </SurfaceCard>
